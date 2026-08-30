@@ -19,6 +19,8 @@ const ANTHROPIC_API_KEY = Deno.env.get("ANTHROPIC_API_KEY") ?? "";
 const CLAUDE_MODEL = Deno.env.get("CLAUDE_MODEL") ?? "claude-haiku-4-5-20251001";
 const GEMINI_API_KEY = Deno.env.get("GEMINI_API_KEY") ?? "";
 const GEMINI_MODEL = Deno.env.get("GEMINI_MODEL") ?? "gemini-3.6-flash";
+const GOOGLE_CSE_KEY = Deno.env.get("GOOGLE_CSE_KEY") ?? "";
+const GOOGLE_CSE_ID = Deno.env.get("GOOGLE_CSE_ID") ?? "";
 
 const DESKTOP_UA =
   "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36";
@@ -474,30 +476,64 @@ async function findRecipeOnline(
 
 // Plan B when Gemini's grounded search is quota-limited: search DuckDuckGo ourselves,
 // fetch the top results, and read the schema.org Recipe JSON-LD that recipe blogs embed.
-async function ddgSearch(query: string): Promise<string[]> {
-  try {
-    const r = await fetch("https://html.duckduckgo.com/html/?q=" + encodeURIComponent(query), {
-      headers: { "User-Agent": DESKTOP_UA, "Accept-Language": "en-US" },
-      signal: AbortSignal.timeout(10000),
-    });
-    if (!r.ok) return [];
-    const html = await r.text();
-    const urls: string[] = [];
-    const re = /class="result__a"[^>]+href="([^"]+)"/g;
-    let m: RegExpExecArray | null;
-    while ((m = re.exec(html)) && urls.length < 8) {
-      let href = decodeEntities(m[1]);
-      const uddg = href.match(/[?&]uddg=([^&]+)/);
-      if (uddg) href = decodeURIComponent(uddg[1]);
-      if (!/^https?:\/\//.test(href)) continue;
-      if (/instagram\.com|tiktok\.com|youtube\.com|youtu\.be|facebook\.com|pinterest\.|reddit\.com|amazon\./i.test(href)) continue;
-      urls.push(href);
-    }
-    return urls;
-  } catch (e) {
-    console.error("ddg search failed", e);
-    return [];
+const SOCIAL_RE = /instagram\.com|tiktok\.com|youtube\.com|youtu\.be|facebook\.com|pinterest\.|reddit\.com|amazon\./i;
+
+function collectLinks(html: string, linkRe: RegExp): string[] {
+  const urls: string[] = [];
+  let m: RegExpExecArray | null;
+  while ((m = linkRe.exec(html)) && urls.length < 8) {
+    let href = decodeEntities(m[1]);
+    const uddg = href.match(/[?&]uddg=([^&]+)/);
+    if (uddg) href = decodeURIComponent(uddg[1]);
+    if (!/^https?:\/\//.test(href) || SOCIAL_RE.test(href)) continue;
+    if (!urls.includes(href)) urls.push(href);
   }
+  return urls;
+}
+
+async function webSearch(query: string): Promise<string[]> {
+  // Google Custom Search API: the only search that reliably works from datacenter IPs.
+  // Free: 100 queries/day. DDG/Mojeek scraping below is a best-effort fallback only.
+  if (GOOGLE_CSE_KEY && GOOGLE_CSE_ID) {
+    try {
+      const r = await fetch(
+        `https://www.googleapis.com/customsearch/v1?key=${GOOGLE_CSE_KEY}&cx=${GOOGLE_CSE_ID}&num=8&q=${encodeURIComponent(query)}`,
+        { signal: AbortSignal.timeout(10000) },
+      );
+      if (r.ok) {
+        const data = await r.json();
+        const urls = (data.items ?? [])
+          .map((it: { link?: string }) => it.link ?? "")
+          .filter((u: string) => /^https?:\/\//.test(u) && !SOCIAL_RE.test(u));
+        if (urls.length) return urls;
+      } else {
+        console.error("google cse error", r.status, await r.text());
+      }
+    } catch (e) {
+      console.error("google cse failed", e);
+    }
+  }
+  const engines: Array<[string, RegExp]> = [
+    // DDG blocks datacenter IPs often; Mojeek is scrape-friendly. Try both, first hit wins.
+    ["https://html.duckduckgo.com/html/?q=", /class="result__a"[^>]+href="([^"]+)"/g],
+    ["https://www.mojeek.com/search?q=", /class="title"[^>]*href="([^"]+)"/g],
+  ];
+  for (const [base, re] of engines) {
+    try {
+      const r = await fetch(base + encodeURIComponent(query), {
+        headers: { "User-Agent": DESKTOP_UA, "Accept-Language": "en-US" },
+        signal: AbortSignal.timeout(10000),
+      });
+      const html = await r.text();
+      if (!r.ok || r.status === 202) { console.error("search engine", base, "status", r.status); continue; }
+      const urls = collectLinks(html, re);
+      if (urls.length) return urls;
+      console.error("search engine", base, "returned no links");
+    } catch (e) {
+      console.error("search engine failed", base, e);
+    }
+  }
+  return [];
 }
 
 function parseLdRecipe(html: string): { name?: string; ingredients: string[]; steps: string[]; cuisine?: string } | null {
@@ -541,7 +577,8 @@ async function findRecipeViaSearch(
 ): Promise<(Card & { source_url: string | null }) | null> {
   const siteHint = caption?.match(/([a-z0-9-]+\.(?:com|net|org|co|blog|recipes?))\b/i)?.[1] ?? "";
   const query = `${title} recipe ${author ?? ""} ${siteHint}`.replace(/\s+/g, " ").trim();
-  const urls = await ddgSearch(query);
+  const urls = await webSearch(query);
+  console.log("recipe search:", query, "->", urls.length, "results");
   for (const u of urls.slice(0, 5)) {
     try {
       const r = await fetch(u, { headers: { "User-Agent": DESKTOP_UA }, signal: AbortSignal.timeout(10000) });
