@@ -551,9 +551,14 @@ export const PAGE_HTML = String.raw`<!DOCTYPE html>
       });
       return s1;
     }
-    function stepSection(items) {
+    function stepSection(items, aiFlag) {
       var s2 = el("div", "section");
       s2.appendChild(el("h3", null, "Steps"));
+      if (aiFlag) {
+        var note = el("div", "norecipe", "✨ AI-suggested steps — the post only listed ingredients, so double-check against the video.");
+        note.style.marginBottom = "12px";
+        s2.appendChild(note);
+      }
       var ol = el("ol", "steps");
       items.forEach(function (st) {
         var li = el("li");
@@ -578,11 +583,11 @@ export const PAGE_HTML = String.raw`<!DOCTYPE html>
         var si = Array.isArray(sr.ingredients) ? sr.ingredients : [];
         var ss = Array.isArray(sr.steps) ? sr.steps : [];
         if (si.length) c.appendChild(ingSection(si, sr.title || r.title));
-        if (ss.length) c.appendChild(stepSection(ss));
+        if (ss.length) c.appendChild(stepSection(ss, !!sr.ai_steps));
       });
     } else if (ings.length || steps.length) {
       if (ings.length) c.appendChild(ingSection(ings, r.title));
-      if (steps.length) c.appendChild(stepSection(steps));
+      if (steps.length) c.appendChild(stepSection(steps, (r.tags || []).indexOf("ai-steps") >= 0));
     } else {
       var nb = el("div", "section");
       nb.appendChild(el("div", "norecipe",

@@ -248,7 +248,7 @@ async function ttMeta(p: Parsed): Promise<Meta> {
 
 // ---------- Claude: caption -> recipe card ----------
 
-type SubRecipe = { title: string; ingredients: string[]; steps: string[] };
+type SubRecipe = { title: string; ingredients: string[]; steps: string[]; ai_steps?: boolean };
 type Card = {
   title: string; category: string; cuisine: string | null;
   ingredients: string[]; steps: string[]; tags: string[]; has_full_recipe: boolean;
@@ -852,6 +852,26 @@ async function extractFromImage(imgUrl: string, title: string): Promise<Card | n
   }
 }
 
+// Last resort when no method exists anywhere: draft sensible steps from the
+// ingredient list, clearly marked as AI-suggested in the app.
+async function generateSteps(title: string, ingredients: string[], caption: string | null): Promise<string[] | null> {
+  const text = await geminiGenerate({
+    systemInstruction: { parts: [{ text:
+      "You write beginner-friendly cooking steps. Based on the dish name, its ingredient list, and any hints in the caption, " +
+      "write 4-9 short, clear steps using ONLY these ingredients and standard technique. Include temperatures and rough times where they are standard for the dish. " +
+      'Reply with ONLY JSON: {"steps": ["...", "..."]}' }] },
+    contents: [{ role: "user", parts: [{ text:
+      `Dish: ${title}\nIngredients:\n${ingredients.join("\n")}${caption ? `\nCaption:\n${caption.slice(0, 1500)}` : ""}` }] }],
+    generationConfig: { responseMimeType: "application/json", maxOutputTokens: 2000 },
+  });
+  if (!text) return null;
+  try {
+    const raw = parseJsonLoose(text) as { steps?: unknown };
+    const steps = Array.isArray(raw.steps) ? raw.steps.map(String).filter(Boolean).slice(0, 12) : [];
+    return steps.length >= 3 ? steps : null;
+  } catch { return null; }
+}
+
 async function buildCard(meta: Meta, platform: string, kind = "reel"): Promise<{ card: Card; sourceUrl: string | null }> {
   const card = await extractCard(meta.caption, meta.author, platform);
   let sourceUrl: string | null = null;
@@ -916,6 +936,20 @@ async function buildCard(meta: Meta, platform: string, kind = "reel"): Promise<{
       card.steps = web.steps;
       card.has_full_recipe = card.steps.length >= 2;
       sourceUrl = sourceUrl ?? (web as Card & { source_url?: string | null }).source_url ?? null;
+    }
+  }
+  // still no method anywhere — draft AI-suggested steps (marked in the app)
+  if (!(card.sub_recipes ?? []).length && card.ingredients.length >= 3 && card.steps.length === 0) {
+    const gen = await generateSteps(card.title, card.ingredients, meta.caption).catch(() => null);
+    if (gen && gen.length) {
+      card.steps = gen;
+      if (!card.tags.includes("ai-steps")) card.tags = [...card.tags, "ai-steps"];
+    }
+  }
+  for (const sr of card.sub_recipes ?? []) {
+    if (sr.ingredients.length >= 3 && !sr.steps.length) {
+      const gen = await generateSteps(sr.title || card.title, sr.ingredients, meta.caption).catch(() => null);
+      if (gen && gen.length) { sr.steps = gen; sr.ai_steps = true; }
     }
   }
   return { card, sourceUrl };
