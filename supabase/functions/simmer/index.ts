@@ -21,6 +21,7 @@ const GEMINI_API_KEY = Deno.env.get("GEMINI_API_KEY") ?? "";
 const GEMINI_MODEL = Deno.env.get("GEMINI_MODEL") ?? "gemini-3.6-flash";
 const GOOGLE_CSE_KEY = Deno.env.get("GOOGLE_CSE_KEY") ?? "";
 const GOOGLE_CSE_ID = Deno.env.get("GOOGLE_CSE_ID") ?? "";
+const TAVILY_API_KEY = Deno.env.get("TAVILY_API_KEY") ?? "";
 
 const DESKTOP_UA =
   "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36";
@@ -478,6 +479,8 @@ async function findRecipeOnline(
 // fetch the top results, and read the schema.org Recipe JSON-LD that recipe blogs embed.
 const SOCIAL_RE = /instagram\.com|tiktok\.com|youtube\.com|youtu\.be|facebook\.com|pinterest\.|reddit\.com|amazon\./i;
 
+const JUNK_RE = /brave\.com|bravesoftware|duckduckgo\.com|mojeek\.com|searx|imgs\.search|\/\/cdn\.|google\.|gstatic\.|\.(css|js|png|jpe?g|svg|ico|webp|woff2?)(\?|$)/i;
+
 function collectLinks(html: string, linkRe: RegExp): string[] {
   const urls: string[] = [];
   let m: RegExpExecArray | null;
@@ -485,15 +488,35 @@ function collectLinks(html: string, linkRe: RegExp): string[] {
     let href = decodeEntities(m[1]);
     const uddg = href.match(/[?&]uddg=([^&]+)/);
     if (uddg) href = decodeURIComponent(uddg[1]);
-    if (!/^https?:\/\//.test(href) || SOCIAL_RE.test(href)) continue;
+    if (!/^https?:\/\//.test(href) || SOCIAL_RE.test(href) || JUNK_RE.test(href)) continue;
     if (!urls.includes(href)) urls.push(href);
   }
   return urls;
 }
 
 async function webSearch(query: string): Promise<string[]> {
-  // Google Custom Search API: the only search that reliably works from datacenter IPs.
-  // Free: 100 queries/day. DDG/Mojeek scraping below is a best-effort fallback only.
+  // Tavily: free 1000 searches/month, works from datacenter IPs. The reliable path.
+  if (TAVILY_API_KEY) {
+    try {
+      const r = await fetch("https://api.tavily.com/search", {
+        method: "POST",
+        headers: { "content-type": "application/json", authorization: `Bearer ${TAVILY_API_KEY}` },
+        body: JSON.stringify({ query, max_results: 8 }),
+        signal: AbortSignal.timeout(15000),
+      });
+      if (r.ok) {
+        const data = await r.json();
+        const urls = (data.results ?? [])
+          .map((x: { url?: string }) => x.url ?? "")
+          .filter((u: string) => /^https?:\/\//.test(u) && !SOCIAL_RE.test(u));
+        if (urls.length) return urls;
+      } else {
+        console.error("tavily error", r.status, await r.text());
+      }
+    } catch (e) {
+      console.error("tavily failed", e);
+    }
+  }
   if (GOOGLE_CSE_KEY && GOOGLE_CSE_ID) {
     try {
       const r = await fetch(
@@ -515,6 +538,7 @@ async function webSearch(query: string): Promise<string[]> {
   }
   const engines: Array<[string, RegExp]> = [
     // DDG blocks datacenter IPs often; Mojeek is scrape-friendly. Try both, first hit wins.
+    ["https://search.brave.com/search?q=", /href="(https?:\/\/[^"]+)"/g],
     ["https://html.duckduckgo.com/html/?q=", /class="result__a"[^>]+href="([^"]+)"/g],
     ["https://www.mojeek.com/search?q=", /class="title"[^>]*href="([^"]+)"/g],
   ];
