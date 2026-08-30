@@ -539,6 +539,7 @@ async function webSearch(query: string): Promise<string[]> {
   const engines: Array<[string, RegExp]> = [
     // DDG blocks datacenter IPs often; Mojeek is scrape-friendly. Try both, first hit wins.
     ["https://search.brave.com/search?q=", /href="(https?:\/\/[^"]+)"/g],
+    ["https://www.bing.com/search?q=", /<h2><a[^>]+href="(https?:\/\/[^"]+)"/g],
     ["https://html.duckduckgo.com/html/?q=", /class="result__a"[^>]+href="([^"]+)"/g],
     ["https://www.mojeek.com/search?q=", /class="title"[^>]*href="([^"]+)"/g],
   ];
@@ -1064,6 +1065,10 @@ Deno.serve(async (req) => {
         if (!meta.author && row.author) meta.author = row.author;
         if (!meta.thumb && row.thumb_url) meta.thumb = row.thumb_url; // reuse cached image for picture-recipes
         const { card, sourceUrl } = await buildCard(meta, parsed.platform, parsed.kind);
+        // a re-run must never downgrade: keep the old title if the new one is much longer,
+        // and the old category if the new run only managed "Other"
+        if (row.title && row.title.length >= 8 && card.title.length > row.title.length + 20) card.title = row.title;
+        if (card.category === "Other" && row.category && row.category !== "Other") card.category = row.category;
         const patch = {
           title: card.title,
           caption: meta.caption,
