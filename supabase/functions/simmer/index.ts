@@ -22,6 +22,7 @@ const GEMINI_MODEL = Deno.env.get("GEMINI_MODEL") ?? "gemini-3.6-flash";
 const GOOGLE_CSE_KEY = Deno.env.get("GOOGLE_CSE_KEY") ?? "";
 const GOOGLE_CSE_ID = Deno.env.get("GOOGLE_CSE_ID") ?? "";
 const TAVILY_API_KEY = Deno.env.get("TAVILY_API_KEY") ?? "";
+const GROQ_API_KEY = Deno.env.get("GROQ_API_KEY") ?? "";
 
 const DESKTOP_UA =
   "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36";
@@ -162,6 +163,71 @@ async function geminiGenerate(body: Record<string, unknown>): Promise<string | n
   }
   console.error("gemini: all models exhausted");
   return null;
+}
+
+// ---- Groq fallback: free tier is 14,400 requests/day, no card. OpenAI-compatible API. ----
+const GROQ_MODELS = [...new Set([
+  Deno.env.get("GROQ_MODEL") ?? "",
+  "openai/gpt-oss-120b",
+  "llama-3.3-70b-versatile",
+  "meta-llama/llama-4-maverick-17b-128e-instruct",
+  "openai/gpt-oss-20b",
+].filter(Boolean))];
+let groqGoodModel: string | null = null;
+
+async function groqGenerate(system: string, user: string, wantJson: boolean): Promise<string | null> {
+  if (!GROQ_API_KEY) return null;
+  const models = groqGoodModel
+    ? [groqGoodModel, ...GROQ_MODELS.filter((m) => m !== groqGoodModel)]
+    : GROQ_MODELS;
+  for (const model of models) {
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const r = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+        method: "POST",
+        headers: { authorization: `Bearer ${GROQ_API_KEY}`, "content-type": "application/json" },
+        body: JSON.stringify({
+          model,
+          messages: [{ role: "system", content: system }, { role: "user", content: user }],
+          max_tokens: 4000,
+          ...(wantJson ? { response_format: { type: "json_object" } } : {}),
+        }),
+      });
+      if (r.status === 429 && attempt === 0) {
+        await r.body?.cancel();
+        await new Promise((res) => setTimeout(res, 2500));
+        continue;
+      }
+      if (r.status === 429 || r.status === 404 || r.status === 400) {
+        // 404/400: decommissioned model or unsupported json mode — rotate
+        console.error("groq", model, r.status, "— rotating to next model");
+        await r.body?.cancel();
+        if (groqGoodModel === model) groqGoodModel = null;
+        break;
+      }
+      if (!r.ok) { console.error("groq error", model, r.status, await r.text()); return null; }
+      const data = await r.json();
+      groqGoodModel = model;
+      return data.choices?.[0]?.message?.content ?? null;
+    }
+  }
+  console.error("groq: all models failed");
+  return null;
+}
+
+// One front door for text generation: Gemini rotation first, Groq rotation as fallback.
+async function textGenerate(system: string, user: string, wantJson: boolean): Promise<string | null> {
+  let out: string | null = null;
+  if (GEMINI_API_KEY) {
+    out = await geminiGenerate({
+      systemInstruction: { parts: [{ text: system }] },
+      contents: [{ role: "user", parts: [{ text: user }] }],
+      generationConfig: wantJson
+        ? { responseMimeType: "application/json", maxOutputTokens: 4000 }
+        : { maxOutputTokens: 2000 },
+    });
+  }
+  if (!out) out = await groqGenerate(system, user, wantJson);
+  return out;
 }
 
 async function igMeta(p: Parsed): Promise<Meta> {
@@ -501,16 +567,6 @@ async function parseWithClaude(caption: string, author: string | null, platform:
   if (!r.ok) { console.error("anthropic error", r.status, await r.text()); return null; }
   const data = await r.json();
   return parseJsonLoose("{" + (data.content?.[0]?.text ?? ""));
-}
-
-async function parseWithGemini(caption: string, author: string | null, platform: string): Promise<Record<string, unknown> | null> {
-  const { system, user } = buildPrompt(caption, author, platform);
-  const text = await geminiGenerate({
-    systemInstruction: { parts: [{ text: system }] },
-    contents: [{ role: "user", parts: [{ text: user }] }],
-    generationConfig: { responseMimeType: "application/json", maxOutputTokens: 4000 },
-  });
-  return text ? parseJsonLoose(text) : null;
 }
 
 // When the caption has no recipe ("comment RECIPE", "it's on my blog"), let Gemini
@@ -855,18 +911,16 @@ async function extractFromImage(imgUrl: string, title: string): Promise<Card | n
 // Last resort when no method exists anywhere: draft sensible steps from the
 // ingredient list, clearly marked as AI-suggested in the app.
 async function generateSteps(title: string, ingredients: string[], caption: string | null, known: string[] = []): Promise<string[] | null> {
-  const text = await geminiGenerate({
-    systemInstruction: { parts: [{ text:
-      "You write beginner-friendly cooking steps. Based on the dish name, its ingredient list, and any hints in the caption, " +
-      "write 4-9 short, clear steps using ONLY these ingredients and standard technique. Include temperatures and rough times where they are standard for the dish. " +
-      (known.length ? "The post included these step fragments — keep their instructions faithfully within your steps. " : "") +
-      'Reply with ONLY JSON: {"steps": ["...", "..."]}' }] },
-    contents: [{ role: "user", parts: [{ text:
-      `Dish: ${title}\nIngredients:\n${ingredients.join("\n")}` +
-      (known.length ? `\nKnown step fragments:\n${known.join("\n")}` : "") +
-      (caption ? `\nCaption:\n${caption.slice(0, 1500)}` : "") }] }],
-    generationConfig: { responseMimeType: "application/json", maxOutputTokens: 2000 },
-  });
+  const system =
+    "You write beginner-friendly cooking steps. Based on the dish name, its ingredient list, and any hints in the caption, " +
+    "write 4-9 short, clear steps using ONLY these ingredients and standard technique. Include temperatures and rough times where they are standard for the dish. " +
+    (known.length ? "The post included these step fragments — keep their instructions faithfully within your steps. " : "") +
+    'Reply with ONLY JSON: {"steps": ["...", "..."]}';
+  const user =
+    `Dish: ${title}\nIngredients:\n${ingredients.join("\n")}` +
+    (known.length ? `\nKnown step fragments:\n${known.join("\n")}` : "") +
+    (caption ? `\nCaption:\n${caption.slice(0, 1500)}` : "");
+  const text = await textGenerate(system, user, true);
   if (!text) return null;
   try {
     const raw = parseJsonLoose(text) as { steps?: unknown };
@@ -963,8 +1017,12 @@ async function extractCard(caption: string | null, author: string | null, platfo
   if (!caption) return base;
   try {
     let raw: Record<string, unknown> | null = null;
-    if (ANTHROPIC_API_KEY) raw = await parseWithClaude(caption, author, platform);
-    else if (GEMINI_API_KEY) raw = await parseWithGemini(caption, author, platform);
+    if (ANTHROPIC_API_KEY) raw = await parseWithClaude(caption, author, platform).catch(() => null);
+    if (!raw) {
+      const { system, user } = buildPrompt(caption, author, platform);
+      const text = await textGenerate(system, user, true);
+      if (text) { try { raw = parseJsonLoose(text); } catch { raw = null; } }
+    }
     if (!raw) return base;
     const card = normalizeCard(raw, base);
     // if the AI came back emptier than the plain parser, keep the parser's findings
@@ -1190,7 +1248,7 @@ Deno.serve(async (req) => {
         const step = String(body.step ?? "").slice(0, 500);
         const title = String(body.title ?? "").slice(0, 150);
         if (!step) return json({ status: "error", message: "No step given." });
-        if (!GEMINI_API_KEY && !ANTHROPIC_API_KEY) return json({ status: "error", message: "No AI key configured." });
+        if (!GEMINI_API_KEY && !ANTHROPIC_API_KEY && !GROQ_API_KEY) return json({ status: "error", message: "No AI key configured." });
         const system =
           "You are a warm, patient cooking teacher helping a beginner home cook. " +
           "Explain the given recipe instruction in plain, friendly language: what it means, how to actually do it, " +
@@ -1208,11 +1266,7 @@ Deno.serve(async (req) => {
             if (r.ok) text = (await r.json()).content?.[0]?.text ?? "";
             else console.error("explain anthropic error", r.status, await r.text());
           } else {
-            text = (await geminiGenerate({
-              systemInstruction: { parts: [{ text: system }] },
-              contents: [{ role: "user", parts: [{ text: user }] }],
-              generationConfig: { maxOutputTokens: 2000 },
-            })) ?? "";
+            text = (await textGenerate(system, user, false)) ?? "";
           }
         } catch (e) {
           console.error("explain failed", e);
