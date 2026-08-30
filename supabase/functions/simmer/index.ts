@@ -1265,6 +1265,15 @@ Deno.serve(async (req) => {
         if (card.ingredients.length < 3 && (row.ingredients ?? []).length >= 3 && !(card.sub_recipes ?? []).length) {
           card.ingredients = row.ingredients;
         }
+        // a fresh extraction of the same subs must inherit steps the old version already had
+        if ((card.sub_recipes ?? []).length && (row.sub_recipes ?? []).length) {
+          for (const sr of card.sub_recipes ?? []) {
+            if (sr.steps.length >= 2) continue;
+            const old = (row.sub_recipes as SubRecipe[]).find((o) =>
+              o.title && sr.title && o.title.toLowerCase() === sr.title.toLowerCase() && (o.steps ?? []).length > 0);
+            if (old) { sr.steps = old.steps; sr.ai_steps = old.ai_steps; }
+          }
+        }
         // restored subs missed the in-buildCard generation pass — run it for them here
         await Promise.all((card.sub_recipes ?? []).map(async (sr: SubRecipe) => {
           if (sr.ingredients.length >= 3 && sr.steps.length < 2) {
