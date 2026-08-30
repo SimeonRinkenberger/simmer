@@ -642,15 +642,26 @@ async function findRecipeViaSearch(
     const siteUrls = await wpSiteSearch(siteHint, title);
     urls = [...siteUrls, ...urls.filter((u) => !siteUrls.includes(u))];
   }
-  console.log("recipe search:", query, "->", urls.length, "candidates");
-  for (const u of urls.slice(0, 6)) {
+  // rank candidates by how many words of the dish name appear in the URL —
+  // a creator's site search can put an unrelated recipe first
+  const stop = new Set(["the", "and", "with", "for", "recipe", "recipes", "see", "below", "number", "most", "popular", "this", "that", "easy", "best", "how", "make", "made", "from", "video", "creamy", "homemade"]);
+  const words = (title.toLowerCase().match(/[a-z]{3,}/g) ?? []).filter((w) => !stop.has(w));
+  const score = (s: string) => { const t = s.toLowerCase(); let n = 0; for (const w of words) if (t.includes(w)) n++; return n; };
+  const ranked = urls.slice(0, 10)
+    .map((u, i) => ({ u, i, s: score(u) }))
+    .sort((a, b) => b.s - a.s || a.i - b.i)
+    .map((x) => x.u);
+  console.log("recipe search:", query, "->", urls.length, "candidates; top:", ranked[0] ?? "none");
+
+  let fallback: (Card & { source_url: string | null }) | null = null;
+  for (const u of ranked.slice(0, 6)) {
     try {
       const r = await fetch(u, { headers: { "User-Agent": DESKTOP_UA }, signal: AbortSignal.timeout(10000) });
       if (!r.ok) continue;
       const rec = parseLdRecipe(await r.text());
       if (rec) {
         const t = cleanTitle(rec.name ?? title) || title;
-        return {
+        const cardOut = {
           title: t,
           category: catFor(t) ?? catFor(title) ?? "Other",
           cuisine: rec.cuisine ?? cuisineFor(t),
@@ -660,28 +671,96 @@ async function findRecipeViaSearch(
           has_full_recipe: rec.ingredients.length >= 3 && rec.steps.length >= 2,
           source_url: u,
         };
+        // accept confidently only when the URL or the recipe's own name matches the dish
+        if (words.length < 2 || score(u) >= 2 || score(rec.name ?? "") >= 2) return cardOut;
+        if (!fallback) fallback = cardOut;
       }
     } catch { /* try next result */ }
   }
-  return null;
+  return fallback;
 }
 
-async function buildCard(meta: Meta, platform: string): Promise<{ card: Card; sourceUrl: string | null }> {
+// Some posts have the recipe written IN the image (recipe-card slides).
+// Gemini Flash reads images on the same free tier.
+function b64encode(buf: ArrayBuffer): string {
+  const bytes = new Uint8Array(buf);
+  let bin = "";
+  for (let i = 0; i < bytes.length; i += 0x8000) {
+    bin += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+  }
+  return btoa(bin);
+}
+
+async function extractFromImage(imgUrl: string, title: string): Promise<Card | null> {
+  if (!GEMINI_API_KEY || !imgUrl) return null;
+  const ir = await fetch(imgUrl, { headers: { "User-Agent": DESKTOP_UA }, signal: AbortSignal.timeout(10000) });
+  if (!ir.ok) return null;
+  const buf = await ir.arrayBuffer();
+  if (buf.byteLength < 1000 || buf.byteLength > 4_000_000) return null;
+  const prompt =
+    `If this image contains a written recipe (a recipe card, ingredient list, or instructions as text in the image), extract it. ` +
+    `Reply with ONLY a JSON object: {"title": short dish name in Title Case, "category": one of ${JSON.stringify(CATEGORIES)}, ` +
+    `"cuisine": string or null, "ingredients": string[] with quantities, "steps": string[], "tags": string[] (max 5), "has_full_recipe": boolean}. ` +
+    `If the image does NOT contain a written recipe (it's just food, a person, or a video frame), reply with exactly {"none": true}. Never invent text that is not readable in the image.`;
+  const r = await fetch(
+    `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent`,
+    {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-goog-api-key": GEMINI_API_KEY },
+      body: JSON.stringify({
+        contents: [{
+          role: "user",
+          parts: [
+            { inline_data: { mime_type: ir.headers.get("content-type") ?? "image/jpeg", data: b64encode(buf) } },
+            { text: prompt },
+          ],
+        }],
+        generationConfig: { maxOutputTokens: 4000 },
+      }),
+    },
+  );
+  if (!r.ok) { console.error("image extract error", r.status, await r.text()); return null; }
+  const data = await r.json();
+  const text = data.candidates?.[0]?.content?.parts?.map((p: { text?: string }) => p.text ?? "").join("") ?? "";
+  try {
+    const raw = parseJsonLoose(text);
+    if (raw.none) return null;
+    const card = normalizeCard(raw, {
+      title, category: "Other", cuisine: null, ingredients: [], steps: [], tags: [], has_full_recipe: false,
+    });
+    return card.ingredients.length >= 3 ? card : null;
+  } catch {
+    return null;
+  }
+}
+
+async function buildCard(meta: Meta, platform: string, kind = "reel"): Promise<{ card: Card; sourceUrl: string | null }> {
   const card = await extractCard(meta.caption, meta.author, platform);
   let sourceUrl: string | null = null;
-  // Caption gave us (nearly) nothing — hunt the recipe down on the web.
+  // Caption gave us (nearly) nothing — read the post image, or hunt the recipe down on the web.
   if (!card.has_full_recipe && card.ingredients.length < 3) {
-    const web = (await findRecipeOnline(card.title, meta.caption, meta.author).catch(() => null)) ??
+    const fromImage = () => (meta.thumb ? extractFromImage(meta.thumb, card.title).catch(() => null) : Promise.resolve(null));
+    const fromWeb = async () =>
+      (await findRecipeOnline(card.title, meta.caption, meta.author).catch(() => null)) ??
       (await findRecipeViaSearch(card.title, meta.caption, meta.author).catch(() => null));
-    if (web && web.ingredients.length >= 3) {
-      card.ingredients = web.ingredients;
-      card.steps = web.steps;
-      if (!card.cuisine) card.cuisine = web.cuisine;
-      if (card.category === "Other") card.category = web.category;
-      if (web.title && (card.title === "Saved recipe" || card.title.startsWith("Recipe from "))) card.title = web.title;
-      if (!card.tags.length) card.tags = web.tags;
-      card.has_full_recipe = web.ingredients.length >= 3 && web.steps.length >= 2;
-      sourceUrl = web.source_url;
+    // photo posts are often recipe-card images; video covers rarely are
+    const attempts = kind === "p" ? [fromImage, fromWeb] : [fromWeb, fromImage];
+    for (const attempt of attempts) {
+      const web = await attempt();
+      if (web && web.ingredients.length >= 3) {
+        card.ingredients = web.ingredients;
+        card.steps = web.steps;
+        if (!card.cuisine) card.cuisine = web.cuisine;
+        if (card.category === "Other") card.category = web.category;
+        const shouty = card.title === card.title.toUpperCase() && /[A-Z]/.test(card.title);
+        if (web.title && (card.title === "Saved recipe" || card.title.startsWith("Recipe from ") || card.title.length > 60 || shouty)) {
+          card.title = web.title;
+        }
+        if (!card.tags.length) card.tags = web.tags;
+        card.has_full_recipe = web.ingredients.length >= 3 && web.steps.length >= 2;
+        sourceUrl = (web as Card & { source_url?: string | null }).source_url ?? null;
+        break;
+      }
     }
   }
   return { card, sourceUrl };
@@ -791,7 +870,7 @@ async function handleIngest(req: Request): Promise<Response> {
   }
 
   const meta = parsed.platform === "instagram" ? await igMeta(parsed) : await ttMeta(parsed);
-  const { card, sourceUrl } = await buildCard(meta, parsed.platform);
+  const { card, sourceUrl } = await buildCard(meta, parsed.platform, parsed.kind);
   const thumb = await storeThumb(parsed.shortcode, meta.thumb);
 
   const row = await dbInsert({
@@ -976,7 +1055,8 @@ Deno.serve(async (req) => {
         const meta = parsed.platform === "instagram" ? await igMeta(parsed) : await ttMeta(parsed);
         if (!meta.caption && row.caption) meta.caption = row.caption; // scraping can be flaky; keep what we had
         if (!meta.author && row.author) meta.author = row.author;
-        const { card, sourceUrl } = await buildCard(meta, parsed.platform);
+        if (!meta.thumb && row.thumb_url) meta.thumb = row.thumb_url; // reuse cached image for picture-recipes
+        const { card, sourceUrl } = await buildCard(meta, parsed.platform, parsed.kind);
         const patch = {
           title: card.title,
           caption: meta.caption,
