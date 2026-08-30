@@ -854,14 +854,17 @@ async function extractFromImage(imgUrl: string, title: string): Promise<Card | n
 
 // Last resort when no method exists anywhere: draft sensible steps from the
 // ingredient list, clearly marked as AI-suggested in the app.
-async function generateSteps(title: string, ingredients: string[], caption: string | null): Promise<string[] | null> {
+async function generateSteps(title: string, ingredients: string[], caption: string | null, known: string[] = []): Promise<string[] | null> {
   const text = await geminiGenerate({
     systemInstruction: { parts: [{ text:
       "You write beginner-friendly cooking steps. Based on the dish name, its ingredient list, and any hints in the caption, " +
       "write 4-9 short, clear steps using ONLY these ingredients and standard technique. Include temperatures and rough times where they are standard for the dish. " +
+      (known.length ? "The post included these step fragments — keep their instructions faithfully within your steps. " : "") +
       'Reply with ONLY JSON: {"steps": ["...", "..."]}' }] },
     contents: [{ role: "user", parts: [{ text:
-      `Dish: ${title}\nIngredients:\n${ingredients.join("\n")}${caption ? `\nCaption:\n${caption.slice(0, 1500)}` : ""}` }] }],
+      `Dish: ${title}\nIngredients:\n${ingredients.join("\n")}` +
+      (known.length ? `\nKnown step fragments:\n${known.join("\n")}` : "") +
+      (caption ? `\nCaption:\n${caption.slice(0, 1500)}` : "") }] }],
     generationConfig: { responseMimeType: "application/json", maxOutputTokens: 2000 },
   });
   if (!text) return null;
@@ -938,20 +941,20 @@ async function buildCard(meta: Meta, platform: string, kind = "reel"): Promise<{
       sourceUrl = sourceUrl ?? (web as Card & { source_url?: string | null }).source_url ?? null;
     }
   }
-  // still no method anywhere — draft AI-suggested steps (marked in the app)
-  if (!(card.sub_recipes ?? []).length && card.ingredients.length >= 3 && card.steps.length === 0) {
-    const gen = await generateSteps(card.title, card.ingredients, meta.caption).catch(() => null);
+  // still no real method anywhere — draft AI-suggested steps (marked in the app)
+  if (!(card.sub_recipes ?? []).length && card.ingredients.length >= 3 && card.steps.length < 2) {
+    const gen = await generateSteps(card.title, card.ingredients, meta.caption, card.steps).catch(() => null);
     if (gen && gen.length) {
       card.steps = gen;
       if (!card.tags.includes("ai-steps")) card.tags = [...card.tags, "ai-steps"];
     }
   }
-  for (const sr of card.sub_recipes ?? []) {
-    if (sr.ingredients.length >= 3 && !sr.steps.length) {
-      const gen = await generateSteps(sr.title || card.title, sr.ingredients, meta.caption).catch(() => null);
+  await Promise.all((card.sub_recipes ?? []).map(async (sr) => {
+    if (sr.ingredients.length >= 3 && sr.steps.length < 2) {
+      const gen = await generateSteps(sr.title || card.title, sr.ingredients, meta.caption, sr.steps).catch(() => null);
       if (gen && gen.length) { sr.steps = gen; sr.ai_steps = true; }
     }
-  }
+  }));
   return { card, sourceUrl };
 }
 
@@ -1241,6 +1244,11 @@ Deno.serve(async (req) => {
         // if the new run (e.g. during AI quota exhaustion) came back empty-handed
         if (row.title && row.title.length >= 8 && card.title.length > row.title.length + 20) card.title = row.title;
         if (card.category === "Other" && row.category && row.category !== "Other") card.category = row.category;
+        if (!(card.sub_recipes ?? []).length && (row.sub_recipes ?? []).length > 0) {
+          card.sub_recipes = row.sub_recipes;
+          card.category = "Meal Prep";
+          card.has_full_recipe = true;
+        }
         if (!card.steps.length && (row.steps ?? []).length > 0 && !(card.sub_recipes ?? []).length) {
           card.steps = splitLongSteps((row.steps as string[]).map(String));
         }
