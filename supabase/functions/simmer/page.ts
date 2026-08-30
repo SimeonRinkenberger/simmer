@@ -200,6 +200,8 @@ export const PAGE_HTML = String.raw`<!DOCTYPE html>
   .gempty { text-align: center; color: var(--muted); padding: 50px 30px; font-size: 14px; line-height: 1.5; }
   .gempty .big { font-size: 48px; }
 
+  .subhead { font-family: var(--serif); font-size: 19px; font-weight: 700; margin-top: 28px;
+    padding-top: 20px; border-top: 2px solid var(--line); }
   .sechead { display: flex; align-items: center; justify-content: space-between; margin: 0 0 10px; }
   .sechead h3 { margin: 0; }
   .addall { border: 1px solid var(--line); background: var(--card); color: var(--accent); border-radius: 999px;
@@ -291,7 +293,7 @@ export const PAGE_HTML = String.raw`<!DOCTYPE html>
 
 <script>
 (function () {
-  var CATS = ["Breakfast","Lunch","Dinner","Dessert","Snack","Drink","Sauce & Dip","Baking","Other"];
+  var CATS = ["Breakfast","Lunch","Dinner","Meal Prep","Dessert","Snack","Drink","Sauce & Dip","Baking","Other"];
   var params = new URLSearchParams(location.search);
   var KEY = params.get("key") || localStorage.getItem("simmer_key") || "";
   if (params.get("key")) localStorage.setItem("simmer_key", params.get("key"));
@@ -483,33 +485,31 @@ export const PAGE_HTML = String.raw`<!DOCTYPE html>
     mr.appendChild(link);
     c.appendChild(mr);
 
-    var ings = Array.isArray(r.ingredients) ? r.ingredients : [];
-    var steps = Array.isArray(r.steps) ? r.steps : [];
-
-    if (ings.length) {
+    var ingUid = 0;
+    function ingSection(items, listTitle) {
       var s1 = el("div", "section");
       var sh = el("div", "sechead");
       sh.appendChild(el("h3", null, "Ingredients"));
       var addAll = el("button", "addall", "🛒 Add all to list");
       addAll.onclick = function () {
         addAll.disabled = true; addAll.textContent = "Adding…";
-        addToGrocery(ings, r).then(function (ok) {
+        addToGrocery(items, { id: r.id, title: listTitle }).then(function (ok) {
           addAll.textContent = ok ? "✓ Added" : "🛒 Add all to list";
           if (!ok) addAll.disabled = false;
         });
       };
       sh.appendChild(addAll);
       s1.appendChild(sh);
-      ings.forEach(function (it, i) {
+      items.forEach(function (it) {
         var row = el("div", "ing");
-        var cb = document.createElement("input"); cb.type = "checkbox"; cb.id = "ing" + i;
+        var cb = document.createElement("input"); cb.type = "checkbox"; cb.id = "ing" + (ingUid++);
         var lb = document.createElement("label"); lb.htmlFor = cb.id; lb.textContent = it; lb.style.flex = "1";
         cb.onchange = function () { row.classList.toggle("done", cb.checked); };
         var cart = el("button", "cartbtn", "+");
         cart.title = "Add to grocery list";
         cart.onclick = function () {
           cart.disabled = true;
-          addToGrocery([it], r).then(function (ok) {
+          addToGrocery([it], { id: r.id, title: listTitle }).then(function (ok) {
             cart.textContent = ok ? "✓" : "+";
             if (!ok) cart.disabled = false;
           });
@@ -517,13 +517,13 @@ export const PAGE_HTML = String.raw`<!DOCTYPE html>
         row.appendChild(cb); row.appendChild(lb); row.appendChild(cart);
         s1.appendChild(row);
       });
-      c.appendChild(s1);
+      return s1;
     }
-    if (steps.length) {
+    function stepSection(items) {
       var s2 = el("div", "section");
       s2.appendChild(el("h3", null, "Steps"));
       var ol = el("ol", "steps");
-      steps.forEach(function (st) {
+      items.forEach(function (st) {
         var li = el("li");
         li.appendChild(el("span", "steptext", st));
         var wb = el("button", "whybtn", "?");
@@ -533,12 +533,28 @@ export const PAGE_HTML = String.raw`<!DOCTYPE html>
         ol.appendChild(li);
       });
       s2.appendChild(ol);
-      c.appendChild(s2);
+      return s2;
     }
-    if (!ings.length && !steps.length) {
+
+    var ings = Array.isArray(r.ingredients) ? r.ingredients : [];
+    var steps = Array.isArray(r.steps) ? r.steps : [];
+    var subs = Array.isArray(r.sub_recipes) ? r.sub_recipes : [];
+
+    if (subs.length) {
+      subs.forEach(function (sr, k) {
+        c.appendChild(el("div", "subhead", (k + 1) + ". " + (sr.title || "Recipe " + (k + 1))));
+        var si = Array.isArray(sr.ingredients) ? sr.ingredients : [];
+        var ss = Array.isArray(sr.steps) ? sr.steps : [];
+        if (si.length) c.appendChild(ingSection(si, sr.title || r.title));
+        if (ss.length) c.appendChild(stepSection(ss));
+      });
+    } else if (ings.length || steps.length) {
+      if (ings.length) c.appendChild(ingSection(ings, r.title));
+      if (steps.length) c.appendChild(stepSection(steps));
+    } else {
       var nb = el("div", "section");
       nb.appendChild(el("div", "norecipe",
-        "No written recipe in this video's caption — watch the video above, or open it on " +
+        "No written recipe in this video's caption — watch the video above, tap ↻ up top to search again, or open it on " +
         (r.platform === "tiktok" ? "TikTok" : "Instagram") + " for details."));
       c.appendChild(nb);
     }

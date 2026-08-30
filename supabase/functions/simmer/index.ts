@@ -28,7 +28,7 @@ const DESKTOP_UA =
 const CRAWLER_UA = "facebookexternalhit/1.1 (+http://www.facebook.com/externalhit_uatext.php)";
 
 const CATEGORIES = [
-  "Breakfast", "Lunch", "Dinner", "Dessert", "Snack",
+  "Breakfast", "Lunch", "Dinner", "Meal Prep", "Dessert", "Snack",
   "Drink", "Sauce & Dip", "Baking", "Other",
 ];
 
@@ -202,9 +202,11 @@ async function ttMeta(p: Parsed): Promise<Meta> {
 
 // ---------- Claude: caption -> recipe card ----------
 
+type SubRecipe = { title: string; ingredients: string[]; steps: string[] };
 type Card = {
   title: string; category: string; cuisine: string | null;
   ingredients: string[]; steps: string[]; tags: string[]; has_full_recipe: boolean;
+  sub_recipes?: SubRecipe[];
 };
 
 // ----- free, no-AI parser (always available; also the safety net under the AI) -----
@@ -247,6 +249,7 @@ function normalizeItem(text: string): string {
 function catFor(text: string): string | null {
   const t = text.toLowerCase();
   const rules: Array<[string, RegExp]> = [
+    ["Meal Prep", /\b(meal.?preps?|meal.?prepping)\b/],
     ["Drink", /\b(smoothie|juice|latte|cocktail|mocktail|coffee|matcha|lemonade|milkshake|shake|tea)\b/],
     ["Sauce & Dip", /\b(sauce|dip|dressing|salsa|pesto|marinade|hummus|aioli|gravy)\b/],
     ["Baking", /\b(sourdough|bread|muffins?|cookies?|brownies?|bagels?|croissants?|dough|scones?|banana bread|cinnamon rolls?)\b/],
@@ -362,7 +365,10 @@ function buildPrompt(caption: string, author: string | null, platform: string) {
     `"ingredients": array of strings with quantities when given, e.g. "2 cups flour" ([] if the caption has none);\n` +
     `"steps": array of short instruction strings ([] if the caption has none);\n` +
     `"tags": up to 5 lowercase tags like "high-protein", "airfryer", "15-min";\n` +
-    `"has_full_recipe": true only if both ingredients and steps are substantially present.\n` +
+    `"has_full_recipe": true only if both ingredients and steps are substantially present;\n` +
+    `"sub_recipes": [] normally — BUT if the caption contains MULTIPLE distinct recipes (a meal-prep video, "5 dinners this week", etc.), ` +
+    `set "category" to "Meal Prep", leave the top-level "ingredients" and "steps" empty, and instead put each recipe into "sub_recipes" ` +
+    `as {"title": dish name, "ingredients": [...], "steps": [...]} in the order they appear.\n` +
     `Never invent ingredients or steps that are not in the caption. Keep the caption's language.`;
   const user = `Caption from a ${platform} video${author ? ` by ${author}` : ""}:\n"""\n${caption.slice(0, 6000)}\n"""`;
   return { system, user };
@@ -376,6 +382,18 @@ function normalizeCard(raw: Record<string, unknown>, base: Card): Card {
   card.tags = (card.tags ?? []).map(String).slice(0, 5);
   card.title = String(card.title || base.title).slice(0, 120);
   card.cuisine = card.cuisine ? String(card.cuisine) : null;
+  const rawSubs = (raw as { sub_recipes?: unknown }).sub_recipes;
+  card.sub_recipes = Array.isArray(rawSubs)
+    ? rawSubs.slice(0, 12).map((s: Record<string, unknown>) => ({
+        title: String(s?.title ?? "").slice(0, 120),
+        ingredients: Array.isArray(s?.ingredients) ? s.ingredients.map(String).slice(0, 60) : [],
+        steps: Array.isArray(s?.steps) ? s.steps.map(String).slice(0, 40) : [],
+      })).filter((s) => s.ingredients.length || s.steps.length)
+    : (base.sub_recipes ?? []);
+  if (card.sub_recipes.length > 0) {
+    card.category = "Meal Prep";
+    card.has_full_recipe = true;
+  }
   return card;
 }
 
@@ -745,7 +763,7 @@ async function buildCard(meta: Meta, platform: string, kind = "reel"): Promise<{
   const card = await extractCard(meta.caption, meta.author, platform);
   let sourceUrl: string | null = null;
   // Caption gave us (nearly) nothing — read the post image, or hunt the recipe down on the web.
-  if (!card.has_full_recipe && card.ingredients.length < 3) {
+  if (!card.has_full_recipe && card.ingredients.length < 3 && !(card.sub_recipes ?? []).length) {
     const fromImage = () => (meta.thumb ? extractFromImage(meta.thumb, card.title).catch(() => null) : Promise.resolve(null));
     const fromWeb = async () =>
       (await findRecipeOnline(card.title, meta.caption, meta.author).catch(() => null)) ??
@@ -897,6 +915,7 @@ async function handleIngest(req: Request): Promise<Response> {
     tags: card.tags,
     has_full_recipe: card.has_full_recipe,
     source_url: sourceUrl,
+    sub_recipes: card.sub_recipes ?? [],
   });
 
   return json({
@@ -1079,6 +1098,7 @@ Deno.serve(async (req) => {
           steps: card.steps,
           tags: card.tags,
           has_full_recipe: card.has_full_recipe,
+          sub_recipes: card.sub_recipes ?? [],
           source_url: sourceUrl ?? row.source_url ?? null,
           thumb_url: row.thumb_url ?? await storeThumb(parsed.shortcode, meta.thumb),
         };
