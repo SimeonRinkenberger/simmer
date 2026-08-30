@@ -1207,6 +1207,12 @@ Deno.serve(async (req) => {
         // if the new run (e.g. during AI quota exhaustion) came back empty-handed
         if (row.title && row.title.length >= 8 && card.title.length > row.title.length + 20) card.title = row.title;
         if (card.category === "Other" && row.category && row.category !== "Other") card.category = row.category;
+        if (!card.steps.length && (row.steps ?? []).length > 0 && !(card.sub_recipes ?? []).length) {
+          card.steps = splitLongSteps((row.steps as string[]).map(String));
+        }
+        if (card.ingredients.length < 3 && (row.ingredients ?? []).length >= 3 && !(card.sub_recipes ?? []).length) {
+          card.ingredients = row.ingredients;
+        }
         const newEmpty = card.ingredients.length < 3 && !card.steps.length && !(card.sub_recipes ?? []).length;
         const oldHad = (row.ingredients ?? []).length >= 3 || (row.steps ?? []).length > 0 || (row.sub_recipes ?? []).length > 0;
         if (newEmpty && oldHad) {

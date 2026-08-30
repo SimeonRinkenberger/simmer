@@ -297,7 +297,7 @@
   var KEY = params.get("key") || localStorage.getItem("simmer_key") || "";
   if (params.get("key")) localStorage.setItem("simmer_key", params.get("key"));
 
-  var state = { recipes: [], cat: "All", q: "", grocery: [], view: "recipes" };
+  var state = { recipes: [], cat: "All", q: "", grocery: [], view: "recipes", madeStars: 0 };
   var $ = function (id) { return document.getElementById(id); };
 
   var API_BASE = "https://mfxaogzzegwkscamarre.supabase.co/functions/v1/simmer/api/";
@@ -327,7 +327,10 @@
   function visible() {
     var q = state.q.toLowerCase();
     var rows = state.recipes.filter(function (r) {
-      if (state.view === "made") { if (!r.rating) return false; }
+      if (state.view === "made") {
+        if (!r.rating) return false;
+        if (state.madeStars && r.rating !== state.madeStars) return false;
+      }
       else if (state.cat === "★") { if (!r.favorite) return false; }
       else if (state.cat !== "All" && r.category !== state.cat) return false;
       if (!q) return true;
@@ -342,6 +345,20 @@
 
   function renderChips() {
     var box = $("chips"); box.innerHTML = "";
+    if (state.view === "made") {
+      var sc = {};
+      state.recipes.forEach(function (r) { if (r.rating) sc[r.rating] = (sc[r.rating] || 0) + 1; });
+      var total = 0; Object.keys(sc).forEach(function (k) { total += sc[k]; });
+      var sitems = [[0, "All", total]];
+      [5, 4, 3, 2, 1].forEach(function (n) { if (sc[n]) sitems.push([n, n + " ★", sc[n]]); });
+      sitems.forEach(function (it) {
+        var b = el("button", "chip" + (state.madeStars === it[0] ? " active" : ""), it[1]);
+        b.appendChild(el("span", "n", String(it[2])));
+        b.onclick = function () { state.madeStars = it[0]; render(); };
+        box.appendChild(b);
+      });
+      return;
+    }
     var counts = {};
     state.recipes.forEach(function (r) { counts[r.category] = (counts[r.category] || 0) + 1; });
     var favs = state.recipes.filter(function (r) { return r.favorite; }).length;
@@ -800,12 +817,13 @@
     $("tab-recipes").classList.toggle("active", rec);
     $("tab-made").classList.toggle("active", made);
     $("tab-grocery").classList.toggle("active", groc);
-    $("chips").style.display = rec ? "" : "none";
+    $("chips").style.display = groc ? "none" : "";
     $("grid").style.display = groc ? "none" : "";
     document.querySelector(".searchwrap").style.display = groc ? "none" : "";
     $("groceryview").style.display = groc ? "" : "none";
+    if (made) state.madeStars = 0;
     if (groc) { $("empty").style.display = "none"; loadGrocery(); }
-    else renderGrid();
+    else render();
   }
   $("tab-recipes").onclick = function () { setView("recipes"); };
   $("tab-made").onclick = function () { setView("made"); };
