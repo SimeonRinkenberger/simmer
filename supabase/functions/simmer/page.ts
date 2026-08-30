@@ -258,6 +258,7 @@ export const PAGE_HTML = String.raw`<!DOCTYPE html>
 
 <nav class="tabbar">
   <button class="tab active" id="tab-recipes">🍲 Recipes</button>
+  <button class="tab" id="tab-made">⭐ Made</button>
   <button class="tab" id="tab-grocery">🛒 Grocery<span class="badge" id="gbadge"></span></button>
 </nav>
 
@@ -327,13 +328,18 @@ export const PAGE_HTML = String.raw`<!DOCTYPE html>
   // ---------- list ----------
   function visible() {
     var q = state.q.toLowerCase();
-    return state.recipes.filter(function (r) {
-      if (state.cat === "★") { if (!r.favorite) return false; }
+    var rows = state.recipes.filter(function (r) {
+      if (state.view === "made") { if (!r.rating) return false; }
+      else if (state.cat === "★") { if (!r.favorite) return false; }
       else if (state.cat !== "All" && r.category !== state.cat) return false;
       if (!q) return true;
       var hay = [r.title, r.caption, r.cuisine, r.author, (r.tags || []).join(" ")].join(" ").toLowerCase();
       return hay.indexOf(q) >= 0;
     });
+    if (state.view === "made") {
+      rows = rows.slice().sort(function (a, b) { return (b.rating || 0) - (a.rating || 0); });
+    }
+    return rows;
   }
 
   function renderChips() {
@@ -356,6 +362,15 @@ export const PAGE_HTML = String.raw`<!DOCTYPE html>
     var grid = $("grid"); grid.innerHTML = "";
     var rows = visible();
     $("empty").style.display = (state.view === "recipes" && !state.recipes.length) ? "block" : "none";
+    if (state.view === "made" && !rows.length) {
+      var ge = el("div", "gempty");
+      ge.appendChild(el("div", "big", "⭐"));
+      var gp = el("p", null, "Nothing made yet — after you cook a recipe, give it a star rating and it shows up here.");
+      ge.appendChild(gp);
+      grid.appendChild(ge);
+      $("count").textContent = "recipes you've made";
+      return;
+    }
     $("count").textContent = state.recipes.length
       ? state.recipes.length + " recipe" + (state.recipes.length === 1 ? "" : "s") + " saved" : "your recipe library";
     rows.forEach(function (r, idx) {
@@ -783,17 +798,19 @@ export const PAGE_HTML = String.raw`<!DOCTYPE html>
 
   function setView(v) {
     state.view = v;
-    var rec = v === "recipes";
+    var rec = v === "recipes", made = v === "made", groc = v === "grocery";
     $("tab-recipes").classList.toggle("active", rec);
-    $("tab-grocery").classList.toggle("active", !rec);
+    $("tab-made").classList.toggle("active", made);
+    $("tab-grocery").classList.toggle("active", groc);
     $("chips").style.display = rec ? "" : "none";
-    $("grid").style.display = rec ? "" : "none";
-    $("empty").style.display = rec && !state.recipes.length ? "block" : "none";
-    document.querySelector(".searchwrap").style.display = rec ? "" : "none";
-    $("groceryview").style.display = rec ? "none" : "";
-    if (!rec) loadGrocery();
+    $("grid").style.display = groc ? "none" : "";
+    document.querySelector(".searchwrap").style.display = groc ? "none" : "";
+    $("groceryview").style.display = groc ? "" : "none";
+    if (groc) { $("empty").style.display = "none"; loadGrocery(); }
+    else renderGrid();
   }
   $("tab-recipes").onclick = function () { setView("recipes"); };
+  $("tab-made").onclick = function () { setView("made"); };
   $("tab-grocery").onclick = function () { setView("grocery"); };
 
   // ---------- install hint ----------

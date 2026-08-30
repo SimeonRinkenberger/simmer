@@ -125,12 +125,50 @@ async function resolveShare(raw: string): Promise<Parsed | null> {
 
 // ---------- metadata scraping ----------
 
-type Meta = { caption: string | null; thumb: string | null; author: string | null };
+type Meta = { caption: string | null; thumb: string | null; author: string | null; images?: string[] };
+
+// ---- Gemini with model rotation: free-tier daily caps are tiny (20/day) PER MODEL ----
+const GEMINI_MODELS = [...new Set([GEMINI_MODEL, "gemini-3.6-flash-lite", "gemini-3-flash-lite", "gemini-3-flash", "gemini-flash-latest"])];
+let geminiGoodModel: string | null = null;
+
+async function geminiGenerate(body: Record<string, unknown>): Promise<string | null> {
+  if (!GEMINI_API_KEY) return null;
+  const models = geminiGoodModel
+    ? [geminiGoodModel, ...GEMINI_MODELS.filter((m) => m !== geminiGoodModel)]
+    : GEMINI_MODELS;
+  for (const model of models) {
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const r = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`, {
+        method: "POST",
+        headers: { "content-type": "application/json", "x-goog-api-key": GEMINI_API_KEY },
+        body: JSON.stringify(body),
+      });
+      if (r.status === 429 && attempt === 0) {
+        await r.body?.cancel();
+        await new Promise((res) => setTimeout(res, 2500));
+        continue;
+      }
+      if (r.status === 429 || r.status === 404) {
+        console.error("gemini", model, r.status, "— rotating to next model");
+        await r.body?.cancel();
+        if (geminiGoodModel === model) geminiGoodModel = null;
+        break;
+      }
+      if (!r.ok) { console.error("gemini", model, r.status, await r.text()); return null; }
+      const data = await r.json();
+      geminiGoodModel = model;
+      return data.candidates?.[0]?.content?.parts?.map((p: { text?: string }) => p.text ?? "").join("") ?? "";
+    }
+  }
+  console.error("gemini: all models exhausted");
+  return null;
+}
 
 async function igMeta(p: Parsed): Promise<Meta> {
   let caption: string | null = null;
   let thumb: string | null = null;
   let author: string | null = null;
+  let images: string[] = [];
 
   // 1) og: tags, served to link-preview crawlers
   try {
@@ -178,10 +216,16 @@ async function igMeta(p: Parsed): Promise<Meta> {
         const a = html.match(/class="UsernameText"[^>]*>([^<]+)</);
         if (a) author = decodeEntities(a[1]);
       }
+      // carousel posts: the embed page's inline JSON exposes display_url for every slide
+      for (const mm of html.matchAll(/"display_url"\s*:\s*"([^"]+)"/g)) {
+        const u = mm[1].replace(/\\u0026/g, "&").replace(/\\\//g, "/");
+        if (/^https:\/\//.test(u) && !images.includes(u)) images.push(u);
+      }
     }
   } catch (_) { /* fall through */ }
 
-  return { caption, thumb, author };
+  if (!images.length && thumb) images = [thumb];
+  return { caption, thumb, author, images };
 }
 
 async function ttMeta(p: Parsed): Promise<Meta> {
@@ -436,32 +480,12 @@ async function parseWithClaude(caption: string, author: string | null, platform:
 
 async function parseWithGemini(caption: string, author: string | null, platform: string): Promise<Record<string, unknown> | null> {
   const { system, user } = buildPrompt(caption, author, platform);
-  // free tier rate-limits during bursts (many saves at once) — retry once
-  for (let attempt = 0; attempt < 2; attempt++) {
-    const r = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent`,
-      {
-        method: "POST",
-        headers: { "content-type": "application/json", "x-goog-api-key": GEMINI_API_KEY },
-        body: JSON.stringify({
-          systemInstruction: { parts: [{ text: system }] },
-          contents: [{ role: "user", parts: [{ text: user }] }],
-          generationConfig: { responseMimeType: "application/json", maxOutputTokens: 4000 },
-        }),
-      },
-    );
-    if ((r.status === 429 || r.status >= 500) && attempt === 0) {
-      console.error("gemini", r.status, "— retrying in 3s");
-      await r.body?.cancel();
-      await new Promise((res) => setTimeout(res, 3000));
-      continue;
-    }
-    if (!r.ok) { console.error("gemini error", r.status, await r.text()); return null; }
-    const data = await r.json();
-    const text = data.candidates?.[0]?.content?.parts?.map((p: { text?: string }) => p.text ?? "").join("") ?? "";
-    return parseJsonLoose(text);
-  }
-  return null;
+  const text = await geminiGenerate({
+    systemInstruction: { parts: [{ text: system }] },
+    contents: [{ role: "user", parts: [{ text: user }] }],
+    generationConfig: { responseMimeType: "application/json", maxOutputTokens: 4000 },
+  });
+  return text ? parseJsonLoose(text) : null;
 }
 
 // When the caption has no recipe ("comment RECIPE", "it's on my blog"), let Gemini
@@ -780,26 +804,17 @@ async function extractFromImage(imgUrl: string, title: string): Promise<Card | n
     `Reply with ONLY a JSON object: {"title": short dish name in Title Case, "category": one of ${JSON.stringify(CATEGORIES)}, ` +
     `"cuisine": string or null, "ingredients": string[] with quantities, "steps": string[], "tags": string[] (max 5), "has_full_recipe": boolean}. ` +
     `If the image does NOT contain a written recipe (it's just food, a person, or a video frame), reply with exactly {"none": true}. Never invent text that is not readable in the image.`;
-  const r = await fetch(
-    `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent`,
-    {
-      method: "POST",
-      headers: { "content-type": "application/json", "x-goog-api-key": GEMINI_API_KEY },
-      body: JSON.stringify({
-        contents: [{
-          role: "user",
-          parts: [
-            { inline_data: { mime_type: ir.headers.get("content-type") ?? "image/jpeg", data: b64encode(buf) } },
-            { text: prompt },
-          ],
-        }],
-        generationConfig: { maxOutputTokens: 4000 },
-      }),
-    },
-  );
-  if (!r.ok) { console.error("image extract error", r.status, await r.text()); return null; }
-  const data = await r.json();
-  const text = data.candidates?.[0]?.content?.parts?.map((p: { text?: string }) => p.text ?? "").join("") ?? "";
+  const text = await geminiGenerate({
+    contents: [{
+      role: "user",
+      parts: [
+        { inline_data: { mime_type: ir.headers.get("content-type") ?? "image/jpeg", data: b64encode(buf) } },
+        { text: prompt },
+      ],
+    }],
+    generationConfig: { maxOutputTokens: 4000 },
+  });
+  if (!text) return null;
   try {
     const raw = parseJsonLoose(text);
     if (raw.none) return null;
@@ -817,10 +832,28 @@ async function buildCard(meta: Meta, platform: string, kind = "reel"): Promise<{
   let sourceUrl: string | null = null;
   // Caption gave us (nearly) nothing — read the post image, or hunt the recipe down on the web.
   if (!card.has_full_recipe && card.ingredients.length < 3 && !(card.sub_recipes ?? []).length) {
-    const fromImage = () => (meta.thumb ? extractFromImage(meta.thumb, card.title).catch(() => null) : Promise.resolve(null));
-    const fromWeb = async () =>
-      (await findRecipeOnline(card.title, meta.caption, meta.author).catch(() => null)) ??
-      (await findRecipeViaSearch(card.title, meta.caption, meta.author).catch(() => null));
+    // try every carousel slide (recipe cards are often on photo 2 or 3);
+    // several slides with recipes become one Meal Prep card
+    const slides = (meta.images?.length ? meta.images : (meta.thumb ? [meta.thumb] : [])).slice(0, 4);
+    const fromImage = async (): Promise<Card | null> => {
+      const found: Card[] = [];
+      for (const img of slides) {
+        const c0 = await extractFromImage(img, card.title).catch(() => null);
+        if (c0) found.push(c0);
+      }
+      if (!found.length) return null;
+      if (found.length === 1) return found[0];
+      return {
+        title: card.title, category: "Meal Prep", cuisine: null,
+        ingredients: [], steps: [], tags: [], has_full_recipe: true,
+        sub_recipes: found.map((f, i) => ({
+          title: f.title || "Recipe " + (i + 1),
+          ingredients: f.ingredients, steps: f.steps,
+        })),
+      };
+    };
+    // grounded Gemini search is paid-only for new free keys — go straight to our own hunt
+    const fromWeb = () => findRecipeViaSearch(card.title, meta.caption, meta.author).catch(() => null);
     // photo posts are often recipe-card images; video covers rarely are
     const attempts = kind === "p" ? [fromImage, fromWeb] : [fromWeb, fromImage];
     for (const attempt of attempts) {
@@ -1093,22 +1126,11 @@ Deno.serve(async (req) => {
             if (r.ok) text = (await r.json()).content?.[0]?.text ?? "";
             else console.error("explain anthropic error", r.status, await r.text());
           } else {
-            const r = await fetch(
-              `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent`,
-              {
-                method: "POST",
-                headers: { "content-type": "application/json", "x-goog-api-key": GEMINI_API_KEY },
-                body: JSON.stringify({
-                  systemInstruction: { parts: [{ text: system }] },
-                  contents: [{ role: "user", parts: [{ text: user }] }],
-                  generationConfig: { maxOutputTokens: 2000 },
-                }),
-              },
-            );
-            if (r.ok) {
-              const data = await r.json();
-              text = data.candidates?.[0]?.content?.parts?.map((p: { text?: string }) => p.text ?? "").join("") ?? "";
-            } else console.error("explain gemini error", r.status, await r.text());
+            text = (await geminiGenerate({
+              systemInstruction: { parts: [{ text: system }] },
+              contents: [{ role: "user", parts: [{ text: user }] }],
+              generationConfig: { maxOutputTokens: 2000 },
+            })) ?? "";
           }
         } catch (e) {
           console.error("explain failed", e);
@@ -1146,9 +1168,19 @@ Deno.serve(async (req) => {
         if (!meta.thumb && row.thumb_url) meta.thumb = row.thumb_url; // reuse cached image for picture-recipes
         const { card, sourceUrl } = await buildCard(meta, parsed.platform, parsed.kind);
         // a re-run must never downgrade: keep the old title if the new one is much longer,
-        // and the old category if the new run only managed "Other"
+        // the old category if the new run only managed "Other", and the old recipe data
+        // if the new run (e.g. during AI quota exhaustion) came back empty-handed
         if (row.title && row.title.length >= 8 && card.title.length > row.title.length + 20) card.title = row.title;
         if (card.category === "Other" && row.category && row.category !== "Other") card.category = row.category;
+        const newEmpty = card.ingredients.length < 3 && !card.steps.length && !(card.sub_recipes ?? []).length;
+        const oldHad = (row.ingredients ?? []).length >= 3 || (row.steps ?? []).length > 0 || (row.sub_recipes ?? []).length > 0;
+        if (newEmpty && oldHad) {
+          card.ingredients = row.ingredients ?? [];
+          card.steps = row.steps ?? [];
+          card.sub_recipes = row.sub_recipes ?? [];
+          card.has_full_recipe = row.has_full_recipe ?? false;
+        }
+        const newSrc = sourceUrl ?? ((newEmpty && oldHad) ? (row.source_url ?? null) : null);
         const patch = {
           title: card.title,
           caption: meta.caption,
@@ -1160,7 +1192,7 @@ Deno.serve(async (req) => {
           tags: card.tags,
           has_full_recipe: card.has_full_recipe,
           sub_recipes: card.sub_recipes ?? [],
-          source_url: sourceUrl ?? row.source_url ?? null,
+          source_url: newSrc,
           thumb_url: row.thumb_url ?? await storeThumb(parsed.shortcode, meta.thumb),
         };
         const pr = await fetch(`${REST}?id=eq.${row.id}`, {
