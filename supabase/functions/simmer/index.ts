@@ -416,6 +416,71 @@ async function parseWithGemini(caption: string, author: string | null, platform:
   return parseJsonLoose(text);
 }
 
+// When the caption has no recipe ("comment RECIPE", "it's on my blog"), let Gemini
+// search the web for the recipe the video refers to. Free tier includes grounded search.
+async function findRecipeOnline(
+  title: string, caption: string | null, author: string | null,
+): Promise<(Card & { source_url: string | null }) | null> {
+  if (!GEMINI_API_KEY) return null;
+  const system =
+    `A cooking video does not include its recipe in the caption. Use Google Search to find the exact recipe it refers to. ` +
+    `Search with the dish name plus the creator's name; if the caption names a website, blog, or search phrase, use that hint. ` +
+    `If the exact source cannot be found, use the closest well-reviewed recipe for the same dish. ` +
+    `Reply with ONLY a JSON object (no markdown fences) with keys: ` +
+    `"title" (short dish name in Title Case), "category" (one of ${JSON.stringify(CATEGORIES)}), "cuisine" (string or null), ` +
+    `"ingredients" (array of strings with quantities), "steps" (array of short instruction strings), ` +
+    `"tags" (up to 5 lowercase strings), "has_full_recipe" (true only if ingredients AND steps are complete), ` +
+    `"source_url" (the exact page URL the recipe came from, or null).`;
+  const user = `Video by ${author ?? "an unknown creator"}: "${title}"\nCaption:\n"""\n${(caption ?? "").slice(0, 3000)}\n"""`;
+  const r = await fetch(
+    `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent`,
+    {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-goog-api-key": GEMINI_API_KEY },
+      body: JSON.stringify({
+        systemInstruction: { parts: [{ text: system }] },
+        contents: [{ role: "user", parts: [{ text: user }] }],
+        tools: [{ google_search: {} }], // JSON response mode can't combine with tools; parse loosely below
+        generationConfig: { maxOutputTokens: 4000 },
+      }),
+    },
+  );
+  if (!r.ok) { console.error("gemini search error", r.status, await r.text()); return null; }
+  const data = await r.json();
+  const text = data.candidates?.[0]?.content?.parts?.map((p: { text?: string }) => p.text ?? "").join("") ?? "";
+  try {
+    const raw = parseJsonLoose(text);
+    const su = typeof raw.source_url === "string" && /^https?:\/\//.test(raw.source_url) ? raw.source_url : null;
+    const card = normalizeCard(raw, {
+      title, category: "Other", cuisine: null, ingredients: [], steps: [], tags: [], has_full_recipe: false,
+    });
+    return { ...card, source_url: su };
+  } catch (e) {
+    console.error("gemini search parse failed", e);
+    return null;
+  }
+}
+
+async function buildCard(meta: Meta, platform: string): Promise<{ card: Card; sourceUrl: string | null }> {
+  const card = await extractCard(meta.caption, meta.author, platform);
+  let sourceUrl: string | null = null;
+  // Caption gave us (nearly) nothing — hunt the recipe down on the web.
+  if (!card.has_full_recipe && card.ingredients.length < 3) {
+    const web = await findRecipeOnline(card.title, meta.caption, meta.author).catch(() => null);
+    if (web && web.ingredients.length >= 3) {
+      card.ingredients = web.ingredients;
+      card.steps = web.steps;
+      if (!card.cuisine) card.cuisine = web.cuisine;
+      if (card.category === "Other") card.category = web.category;
+      if (web.title && (card.title === "Saved recipe" || card.title.startsWith("Recipe from "))) card.title = web.title;
+      if (!card.tags.length) card.tags = web.tags;
+      card.has_full_recipe = web.ingredients.length >= 3 && web.steps.length >= 2;
+      sourceUrl = web.source_url;
+    }
+  }
+  return { card, sourceUrl };
+}
+
 async function extractCard(caption: string | null, author: string | null, platform: string): Promise<Card> {
   const base = heuristicCard(caption, author);
   if (!caption) return base;
@@ -520,7 +585,7 @@ async function handleIngest(req: Request): Promise<Response> {
   }
 
   const meta = parsed.platform === "instagram" ? await igMeta(parsed) : await ttMeta(parsed);
-  const card = await extractCard(meta.caption, meta.author, parsed.platform);
+  const { card, sourceUrl } = await buildCard(meta, parsed.platform);
   const thumb = await storeThumb(parsed.shortcode, meta.thumb);
 
   const row = await dbInsert({
@@ -538,6 +603,7 @@ async function handleIngest(req: Request): Promise<Response> {
     steps: card.steps,
     tags: card.tags,
     has_full_recipe: card.has_full_recipe,
+    source_url: sourceUrl,
   });
 
   return json({
@@ -591,6 +657,44 @@ Deno.serve(async (req) => {
       if (req.method === "GET" && sub === "/api/recipes") {
         const rows = await dbSelect("select=*&order=created_at.desc&limit=500");
         return json(rows);
+      }
+
+      const reMatch = sub.match(/^\/api\/recipes\/([0-9a-f-]{36})\/reprocess$/);
+      if (reMatch && req.method === "POST") {
+        const rows = await dbSelect(`id=eq.${reMatch[1]}&select=*`);
+        if (!rows.length) return json({ status: "error", message: "Not found." }, 404);
+        const row = rows[0];
+        const parsed: Parsed = {
+          platform: row.platform as Parsed["platform"],
+          shortcode: row.shortcode,
+          kind: row.kind ?? "reel",
+          clean: row.url,
+        };
+        const meta = parsed.platform === "instagram" ? await igMeta(parsed) : await ttMeta(parsed);
+        if (!meta.caption && row.caption) meta.caption = row.caption; // scraping can be flaky; keep what we had
+        if (!meta.author && row.author) meta.author = row.author;
+        const { card, sourceUrl } = await buildCard(meta, parsed.platform);
+        const patch = {
+          title: card.title,
+          caption: meta.caption,
+          author: meta.author,
+          category: card.category,
+          cuisine: card.cuisine,
+          ingredients: card.ingredients,
+          steps: card.steps,
+          tags: card.tags,
+          has_full_recipe: card.has_full_recipe,
+          source_url: sourceUrl ?? row.source_url ?? null,
+          thumb_url: row.thumb_url ?? await storeThumb(parsed.shortcode, meta.thumb),
+        };
+        const pr = await fetch(`${REST}?id=eq.${row.id}`, {
+          method: "PATCH",
+          headers: { ...dbHeaders, prefer: "return=representation" },
+          body: JSON.stringify(patch),
+        });
+        if (!pr.ok) throw new Error(`db patch ${pr.status}: ${await pr.text()}`);
+        const updated = (await pr.json())[0];
+        return json({ ...updated, status: "reprocessed", message: `Updated: ${updated.title} → ${updated.category}` });
       }
 
       const idMatch = sub.match(/^\/api\/recipes\/([0-9a-f-]{36})$/);

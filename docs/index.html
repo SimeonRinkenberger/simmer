@@ -39,6 +39,10 @@
   .count { color: var(--muted); font-size: 13px; margin-top: 1px; }
   .addbtn { width: 38px; height: 38px; border-radius: 12px; border: none; background: var(--accent);
     color: #fff; font-size: 24px; line-height: 1; font-weight: 600; box-shadow: var(--shadow); }
+  .hbtns { display: flex; gap: 8px; }
+  .addbtn.ghost { background: var(--card); color: var(--text); font-size: 19px; }
+  .spin { animation: spin 1s linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
   .searchwrap { margin-top: 10px; }
   .search { width: 100%; border: none; border-radius: 12px; padding: 10px 14px; font-size: 15px;
     background: var(--card); color: var(--text); box-shadow: var(--shadow); outline: none; }
@@ -146,7 +150,10 @@
       <h1><span class="flame">🍲</span> Simmer</h1>
       <div class="count" id="count"></div>
     </div>
-    <button class="addbtn" id="addbtn" aria-label="Add by link">+</button>
+    <div class="hbtns">
+      <button class="addbtn ghost" id="refbtn" aria-label="Refresh">↻</button>
+      <button class="addbtn" id="addbtn" aria-label="Add by link">+</button>
+    </div>
   </div>
   <div class="searchwrap"><input class="search" id="search" type="search" placeholder="Search recipes…"></div>
 </header>
@@ -280,7 +287,7 @@
   function render() { renderChips(); renderGrid(); }
 
   function load() {
-    api("recipes").then(function (rows) {
+    return api("recipes").then(function (rows) {
       if (Array.isArray(rows)) { state.recipes = rows; render(); }
       else toast(rows.message || "Could not load");
     }).catch(function () {});
@@ -298,6 +305,16 @@
     var top = el("div", "dtop");
     var back = el("button", "iconbtn", "←"); back.onclick = closeDetail;
     var actions = el("div", "dactions");
+    var re = el("button", "iconbtn", "↻");
+    re.title = "Re-extract this recipe";
+    re.onclick = function () {
+      re.classList.add("spin"); toast("Re-extracting… takes ~20 seconds");
+      api("recipes/" + r.id + "/reprocess", { method: "POST" }).then(function (res) {
+        re.classList.remove("spin");
+        if (res && res.id) { toast(res.message || "Updated"); load(); openDetail(res); }
+        else toast((res && res.message) || "Could not update");
+      }).catch(function () { re.classList.remove("spin"); toast("Network error"); });
+    };
     var fav = el("button", "iconbtn", r.favorite ? "★" : "☆");
     fav.style.color = r.favorite ? "#E7A33B" : "";
     fav.onclick = function () {
@@ -310,7 +327,7 @@
       if (!confirm("Delete “" + (r.title || "this recipe") + "”?")) return;
       api("recipes/" + r.id, { method: "DELETE" }).then(function () { closeDetail(); toast("Deleted"); load(); });
     };
-    actions.appendChild(fav); actions.appendChild(del);
+    actions.appendChild(re); actions.appendChild(fav); actions.appendChild(del);
     top.appendChild(back); top.appendChild(actions);
     ov.appendChild(top);
 
@@ -352,6 +369,14 @@
     };
     mr.appendChild(sel);
     if (r.cuisine) mr.appendChild(el("span", "mchip", r.cuisine));
+    if (r.source_url) {
+      var src = document.createElement("a");
+      src.className = "mchip link"; src.href = r.source_url; src.target = "_blank"; src.rel = "noopener";
+      var host = "recipe source";
+      try { host = new URL(r.source_url).hostname.replace(/^www\./, ""); } catch (err) {}
+      src.textContent = "Recipe: " + host + " ↗";
+      mr.appendChild(src);
+    }
     var link = document.createElement("a");
     link.className = "mchip link"; link.href = r.url; link.target = "_blank"; link.rel = "noopener";
     link.textContent = (r.platform === "tiktok" ? "Open in TikTok" : "Open in Instagram") + " ↗";
@@ -401,9 +426,10 @@
     }
 
     ov.appendChild(c);
+    var wasOpen = ov.classList.contains("open");
     ov.classList.add("open");
     document.body.style.overflow = "hidden";
-    history.pushState({ detail: 1 }, "");
+    if (!wasOpen) history.pushState({ detail: 1 }, "");
   }
 
   function closeDetail() {
@@ -440,6 +466,16 @@
 
   // ---------- search ----------
   $("search").addEventListener("input", function (e) { state.q = e.target.value; renderGrid(); });
+
+  // ---------- refresh: manual button + automatic when returning to the app ----------
+  $("refbtn").onclick = function () {
+    var b = $("refbtn"); b.classList.add("spin");
+    Promise.resolve(load()).then(function () { b.classList.remove("spin"); toast("Up to date"); });
+  };
+  document.addEventListener("visibilitychange", function () {
+    if (!document.hidden && KEY) load();
+  });
+  window.addEventListener("pageshow", function (e) { if (e.persisted && KEY) load(); });
 
   // ---------- install hint ----------
   var standalone = window.navigator.standalone === true || matchMedia("(display-mode: standalone)").matches;
