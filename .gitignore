@@ -1,3 +1,5 @@
 .env.local
 supabase/.temp/
 .DS_Store
+SETUP-PRIVATE.md
+simmer-app-qr.png

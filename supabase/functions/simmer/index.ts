@@ -17,6 +17,8 @@ const SERVICE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
 const APP_KEY = Deno.env.get("APP_KEY") ?? "";
 const ANTHROPIC_API_KEY = Deno.env.get("ANTHROPIC_API_KEY") ?? "";
 const CLAUDE_MODEL = Deno.env.get("CLAUDE_MODEL") ?? "claude-haiku-4-5-20251001";
+const GEMINI_API_KEY = Deno.env.get("GEMINI_API_KEY") ?? "";
+const GEMINI_MODEL = Deno.env.get("GEMINI_MODEL") ?? "gemini-3.6-flash";
 
 const DESKTOP_UA =
   "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36";
@@ -202,18 +204,141 @@ type Card = {
   ingredients: string[]; steps: string[]; tags: string[]; has_full_recipe: boolean;
 };
 
-function fallbackCard(caption: string | null): Card {
-  const firstLine = caption?.split("\n").map((l) => l.trim()).find((l) => l.length > 2);
-  return {
-    title: (firstLine ?? "Saved recipe").slice(0, 80),
+// ----- free, no-AI parser (always available; also the safety net under the AI) -----
+
+const ING_HEADER = /^[^a-zA-Z]*(ingredients?|you.?ll need|what you need|grocery list)\b/i;
+const STEP_HEADER = /^[^a-zA-Z]*(method|instructions?|directions?|steps|how to|preparation|to make)\b/i;
+const SPAM_LINE = /^#|follow (me|for)|link in bio|save this|comment ["'“]?\w+["'”]? (below|to get)/i;
+const QTY_LINE = new RegExp(
+  "^(?:[-•*▢☐✅✔️◽▪️👉➡️\\s]|\\d+[.)]\\s)*\\s*\\d[\\d\\s/.,-]*\\s*(?:g|kg|grams?|ml|l|oz|ounces?|lbs?|pounds?|cups?|tbsps?|tablespoons?|tsps?|teaspoons?|cloves?|cans?|sticks?|slices?|pieces?|pinch|dash|handful|eggs?|scoops?)\\b",
+  "i",
+);
+
+function cleanLine(s: string): string {
+  return s
+    .replace(/^[\s\-–—•*▢☐✅✔️◽▪️👉➡️🔸🔹]+/u, "")
+    .replace(/[\p{Extended_Pictographic}️‍]/gu, "")
+    .replace(/\s{2,}/g, " ")
+    .trim();
+}
+
+function cleanTitle(s: string): string {
+  const t = cleanLine(s)
+    .replace(/#\w+/g, "").replace(/@[\w.]+/g, "")
+    .replace(/^[\s:;,.!|~*-]+|[\s:;,.!|~*-]+$/g, "")
+    .trim();
+  return t.slice(0, 100);
+}
+
+function catFor(text: string): string | null {
+  const t = text.toLowerCase();
+  const rules: Array<[string, RegExp]> = [
+    ["Drink", /\b(smoothie|juice|latte|cocktail|mocktail|coffee|matcha|lemonade|milkshake|shake|tea)\b/],
+    ["Sauce & Dip", /\b(sauce|dip|dressing|salsa|pesto|marinade|hummus|aioli|gravy)\b/],
+    ["Baking", /\b(sourdough|bread|muffins?|cookies?|brownies?|bagels?|croissants?|dough|scones?|banana bread|cinnamon rolls?)\b/],
+    ["Dessert", /\b(dessert|ice cream|cheesecake|pudding|tiramisu|mousse|cakes?|tarts?|sweet treat|chocolate)\b/],
+    ["Breakfast", /\b(breakfast|pancakes?|waffles?|oats|oatmeal|granola|french toast|omelette?|scrambled|overnight oats|brunch)\b/],
+    ["Snack", /\b(snack|energy balls?|protein bars?|bites|trail mix|popcorn)\b/],
+    ["Lunch", /\b(salad|sandwich|wraps?|lunch|toast|soup)\b/],
+    ["Dinner", /\b(pasta|chicken|beef|pork|salmon|shrimp|steak|curry|stir.?fry|tacos?|burgers?|pizza|risotto|lasagna|meatballs?|casserole|dinner|noodles?|rice bowl|enchiladas?)\b/],
+  ];
+  for (const [cat, re] of rules) if (re.test(t)) return cat;
+  return null;
+}
+
+function cuisineFor(text: string): string | null {
+  const t = text.toLowerCase();
+  const rules: Array<[string, RegExp]> = [
+    ["Italian", /\b(pasta|risotto|lasagna|parmesan|carbonara|gnocchi|italian)\b/],
+    ["Mexican", /\b(tacos?|burritos?|quesadillas?|enchiladas?|salsa|mexican)\b/],
+    ["Japanese", /\b(ramen|sushi|teriyaki|miso|japanese|katsu)\b/],
+    ["Thai", /\b(pad thai|thai|tom yum)\b/],
+    ["Indian", /\b(masala|tikka|dal|paneer|indian|butter chicken)\b/],
+    ["Korean", /\b(kimchi|gochujang|bulgogi|korean|bibimbap)\b/],
+    ["Chinese", /\b(dumplings?|fried rice|chow mein|szechuan|chinese|wonton)\b/],
+    ["Mediterranean", /\b(hummus|falafel|tzatziki|gyro|mediterranean|greek)\b/],
+    ["French", /\b(croissants?|french onion|ratatouille|crepes?|french)\b/],
+  ];
+  for (const [c, re] of rules) if (re.test(t)) return c;
+  return null;
+}
+
+function heuristicCard(caption: string | null, author: string | null): Card {
+  const empty: Card = {
+    title: author ? `Recipe from ${author}` : "Saved recipe",
     category: "Other", cuisine: null,
     ingredients: [], steps: [], tags: [], has_full_recipe: false,
   };
+  if (!caption) return empty;
+
+  const lines = caption.split("\n").map((l) => l.trim());
+
+  // title: first meaningful line that isn't a section header
+  let title = "";
+  for (const l of lines) {
+    if (!l || ING_HEADER.test(l) || STEP_HEADER.test(l) || SPAM_LINE.test(l)) continue;
+    title = cleanTitle(l);
+    if (title.length >= 3) break;
+  }
+  if (!title) title = empty.title;
+
+  const ingHdr = lines.findIndex((l) => ING_HEADER.test(l));
+  const stepHdr = lines.findIndex((l) => STEP_HEADER.test(l));
+
+  const ingredients: string[] = [];
+  if (ingHdr >= 0) {
+    const stop = stepHdr > ingHdr ? stepHdr : lines.length;
+    for (let i = ingHdr + 1; i < stop && ingredients.length < 40; i++) {
+      const l = cleanLine(lines[i]);
+      if (!l) continue;
+      if (SPAM_LINE.test(lines[i]) || STEP_HEADER.test(lines[i])) break;
+      if (l.length > 140) break; // hit prose, section is over
+      ingredients.push(l);
+    }
+  } else {
+    for (const raw of lines) {
+      const l = cleanLine(raw);
+      if (l && l.length <= 140 && QTY_LINE.test(raw)) ingredients.push(l);
+      if (ingredients.length >= 40) break;
+    }
+    if (ingredients.length < 3) ingredients.length = 0; // too weak a signal
+  }
+
+  const steps: string[] = [];
+  if (stepHdr >= 0) {
+    for (let i = stepHdr + 1; i < lines.length && steps.length < 30; i++) {
+      const raw = lines[i];
+      if (SPAM_LINE.test(raw)) break;
+      const l = cleanLine(raw).replace(/^(?:step\s*)?\d+\s*[.):-]\s*/i, "");
+      if (l) steps.push(l.slice(0, 400));
+    }
+  } else {
+    for (const raw of lines) {
+      if (/^\d+[.)]\s+\D/.test(raw) && !QTY_LINE.test(raw)) {
+        steps.push(cleanLine(raw).replace(/^\d+\s*[.)]\s*/, "").slice(0, 400));
+      }
+    }
+    if (steps.length < 2) steps.length = 0;
+  }
+
+  const genericTags = new Set(["food", "foodie", "recipe", "recipes", "fyp", "viral", "cooking", "yum", "yummy", "instafood", "reels", "explore", "foodtok", "easyrecipes"]);
+  const tags = [...caption.matchAll(/#(\w{2,30})/g)]
+    .map((m) => m[1].toLowerCase())
+    .filter((t) => !genericTags.has(t))
+    .slice(0, 5);
+
+  return {
+    title,
+    category: catFor(title) ?? catFor(caption) ?? "Other",
+    cuisine: cuisineFor(title) ?? cuisineFor(caption),
+    ingredients, steps, tags,
+    has_full_recipe: ingredients.length >= 3 && steps.length >= 2,
+  };
 }
 
-async function extractCard(caption: string | null, author: string | null, platform: string): Promise<Card> {
-  if (!ANTHROPIC_API_KEY || !caption) return fallbackCard(caption);
+// ----- AI extraction: Claude if ANTHROPIC_API_KEY is set, else Gemini if GEMINI_API_KEY is set -----
 
+function buildPrompt(caption: string, author: string | null, platform: string) {
   const system =
     `You turn social-media cooking video captions into recipe cards. ` +
     `Reply with ONLY a JSON object (no markdown fences, no commentary) with exactly these keys:\n` +
@@ -225,44 +350,89 @@ async function extractCard(caption: string | null, author: string | null, platfo
     `"tags": up to 5 lowercase tags like "high-protein", "airfryer", "15-min";\n` +
     `"has_full_recipe": true only if both ingredients and steps are substantially present.\n` +
     `Never invent ingredients or steps that are not in the caption. Keep the caption's language.`;
-
   const user = `Caption from a ${platform} video${author ? ` by ${author}` : ""}:\n"""\n${caption.slice(0, 6000)}\n"""`;
+  return { system, user };
+}
 
-  try {
-    const r = await fetch("https://api.anthropic.com/v1/messages", {
+function normalizeCard(raw: Record<string, unknown>, base: Card): Card {
+  const card = { ...base, ...raw } as Card;
+  if (!CATEGORIES.includes(card.category)) card.category = base.category;
+  card.ingredients = (card.ingredients ?? []).map(String);
+  card.steps = (card.steps ?? []).map(String);
+  card.tags = (card.tags ?? []).map(String).slice(0, 5);
+  card.title = String(card.title || base.title).slice(0, 120);
+  card.cuisine = card.cuisine ? String(card.cuisine) : null;
+  return card;
+}
+
+function parseJsonLoose(text: string): Record<string, unknown> {
+  const cleaned = text.replace(/^```json?\s*/i, "").replace(/```\s*$/, "").trim();
+  const start = cleaned.indexOf("{");
+  const end = cleaned.lastIndexOf("}");
+  return JSON.parse(cleaned.slice(start, end + 1));
+}
+
+async function parseWithClaude(caption: string, author: string | null, platform: string): Promise<Record<string, unknown> | null> {
+  const { system, user } = buildPrompt(caption, author, platform);
+  const r = await fetch("https://api.anthropic.com/v1/messages", {
+    method: "POST",
+    headers: {
+      "x-api-key": ANTHROPIC_API_KEY,
+      "anthropic-version": "2023-06-01",
+      "content-type": "application/json",
+    },
+    body: JSON.stringify({
+      model: CLAUDE_MODEL,
+      max_tokens: 2000,
+      system,
+      messages: [
+        { role: "user", content: user },
+        { role: "assistant", content: "{" },
+      ],
+    }),
+  });
+  if (!r.ok) { console.error("anthropic error", r.status, await r.text()); return null; }
+  const data = await r.json();
+  return parseJsonLoose("{" + (data.content?.[0]?.text ?? ""));
+}
+
+async function parseWithGemini(caption: string, author: string | null, platform: string): Promise<Record<string, unknown> | null> {
+  const { system, user } = buildPrompt(caption, author, platform);
+  const r = await fetch(
+    `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent`,
+    {
       method: "POST",
-      headers: {
-        "x-api-key": ANTHROPIC_API_KEY,
-        "anthropic-version": "2023-06-01",
-        "content-type": "application/json",
-      },
+      headers: { "content-type": "application/json", "x-goog-api-key": GEMINI_API_KEY },
       body: JSON.stringify({
-        model: CLAUDE_MODEL,
-        max_tokens: 2000,
-        system,
-        messages: [
-          { role: "user", content: user },
-          { role: "assistant", content: "{" },
-        ],
+        systemInstruction: { parts: [{ text: system }] },
+        contents: [{ role: "user", parts: [{ text: user }] }],
+        generationConfig: { responseMimeType: "application/json", maxOutputTokens: 4000 },
       }),
-    });
-    if (!r.ok) {
-      console.error("anthropic error", r.status, await r.text());
-      return fallbackCard(caption);
-    }
-    const data = await r.json();
-    const text = "{" + (data.content?.[0]?.text ?? "");
-    const raw = JSON.parse(text.replace(/^```json?|```$/g, "").trim());
-    const card = { ...fallbackCard(caption), ...raw } as Card;
-    if (!CATEGORIES.includes(card.category)) card.category = "Other";
-    card.ingredients = (card.ingredients ?? []).map(String);
-    card.steps = (card.steps ?? []).map(String);
-    card.tags = (card.tags ?? []).map(String).slice(0, 5);
-    card.title = String(card.title ?? "Saved recipe").slice(0, 120);
+    },
+  );
+  if (!r.ok) { console.error("gemini error", r.status, await r.text()); return null; }
+  const data = await r.json();
+  const text = data.candidates?.[0]?.content?.parts?.map((p: { text?: string }) => p.text ?? "").join("") ?? "";
+  return parseJsonLoose(text);
+}
+
+async function extractCard(caption: string | null, author: string | null, platform: string): Promise<Card> {
+  const base = heuristicCard(caption, author);
+  if (!caption) return base;
+  try {
+    let raw: Record<string, unknown> | null = null;
+    if (ANTHROPIC_API_KEY) raw = await parseWithClaude(caption, author, platform);
+    else if (GEMINI_API_KEY) raw = await parseWithGemini(caption, author, platform);
+    if (!raw) return base;
+    const card = normalizeCard(raw, base);
+    // if the AI came back emptier than the plain parser, keep the parser's findings
+    if (!card.ingredients.length && base.ingredients.length) card.ingredients = base.ingredients;
+    if (!card.steps.length && base.steps.length) card.steps = base.steps;
+    card.has_full_recipe = card.has_full_recipe || base.has_full_recipe;
     return card;
   } catch (e) {
-    console.error("extractCard failed", e);
-    return fallbackCard(caption);
+    console.error("extractCard failed, using heuristic card", e);
+    return base;
   }
 }
 
