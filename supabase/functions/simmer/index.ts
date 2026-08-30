@@ -394,12 +394,13 @@ function heuristicCard(caption: string | null, author: string | null): Card {
     .filter((t) => !genericTags.has(t))
     .slice(0, 5);
 
+  const finalSteps = splitLongSteps(steps);
   return {
     title,
     category: catFor(title) ?? catFor(caption) ?? "Other",
     cuisine: cuisineFor(title) ?? cuisineFor(caption),
-    ingredients, steps, tags,
-    has_full_recipe: ingredients.length >= 3 && steps.length >= 2,
+    ingredients, steps: finalSteps, tags,
+    has_full_recipe: ingredients.length >= 3 && finalSteps.length >= 2,
   };
 }
 
@@ -424,11 +425,35 @@ function buildPrompt(caption: string, author: string | null, platform: string) {
   return { system, user };
 }
 
+// Some sources jam the whole method into one giant "step" — split it back up.
+function splitLongSteps(steps: string[]): string[] {
+  const out: string[] = [];
+  for (const s of steps) {
+    if (s.length <= 260) { out.push(s); continue; }
+    let parts = s.split(/\s*(?:\r?\n)+\s*/).filter(Boolean);
+    if (parts.length < 2) {
+      parts = s.split(/\s+(?=\d+[.)]\s)/).map((p) => p.replace(/^\d+[.)]\s*/, "")).filter(Boolean);
+    }
+    if (parts.length < 2) {
+      const sentences = s.match(/[^.!?]+[.!?]+(?:\s|$)|[^.!?]+$/g) ?? [s];
+      let cur = "";
+      parts = [];
+      for (const sent of sentences) {
+        if ((cur + sent).length > 220 && cur) { parts.push(cur.trim()); cur = sent; }
+        else cur += sent;
+      }
+      if (cur.trim()) parts.push(cur.trim());
+    }
+    for (const p of parts) { const t = p.trim(); if (t) out.push(t); }
+  }
+  return out.slice(0, 40);
+}
+
 function normalizeCard(raw: Record<string, unknown>, base: Card): Card {
   const card = { ...base, ...raw } as Card;
   if (!CATEGORIES.includes(card.category)) card.category = base.category;
   card.ingredients = (card.ingredients ?? []).map(String);
-  card.steps = (card.steps ?? []).map(String);
+  card.steps = splitLongSteps((card.steps ?? []).map(String));
   card.tags = (card.tags ?? []).map(String).slice(0, 5);
   card.title = String(card.title || base.title).slice(0, 120);
   card.cuisine = card.cuisine ? String(card.cuisine) : null;
@@ -437,7 +462,7 @@ function normalizeCard(raw: Record<string, unknown>, base: Card): Card {
     ? rawSubs.slice(0, 12).map((s: Record<string, unknown>) => ({
         title: String(s?.title ?? "").slice(0, 120),
         ingredients: Array.isArray(s?.ingredients) ? s.ingredients.map(String).slice(0, 60) : [],
-        steps: Array.isArray(s?.steps) ? s.steps.map(String).slice(0, 40) : [],
+        steps: Array.isArray(s?.steps) ? splitLongSteps(s.steps.map(String)) : [],
       })).filter((s) => s.ingredients.length || s.steps.length)
     : (base.sub_recipes ?? []);
   if (card.sub_recipes.length > 0) {
@@ -750,7 +775,7 @@ async function findRecipeViaSearch(
           sub_recipes: recs.slice(0, 12).map((rec, i) => ({
             title: cleanTitle(rec.name ?? "Recipe " + (i + 1)),
             ingredients: rec.ingredients.slice(0, 60),
-            steps: rec.steps.slice(0, 40),
+            steps: splitLongSteps(rec.steps),
           })),
           source_url: u,
           confident,
@@ -769,7 +794,7 @@ async function findRecipeViaSearch(
         category: catFor(t) ?? catFor(title) ?? "Other",
         cuisine: rec.cuisine ?? cuisineFor(t),
         ingredients: rec.ingredients.slice(0, 60),
-        steps: rec.steps.slice(0, 40),
+        steps: splitLongSteps(rec.steps),
         tags: [],
         has_full_recipe: rec.ingredients.length >= 3 && rec.steps.length >= 2,
         source_url: u,
@@ -881,6 +906,16 @@ async function buildCard(meta: Meta, platform: string, kind = "reel"): Promise<{
         sourceUrl = (web as Card & { source_url?: string | null }).source_url ?? null;
         break;
       }
+    }
+  }
+  // caption had the ingredients but no method ("full recipe in video") — fetch just the steps
+  if (!(card.sub_recipes ?? []).length && card.ingredients.length >= 3 && card.steps.length === 0) {
+    const web = await findRecipeViaSearch(card.title, meta.caption, meta.author).catch(() => null);
+    if (web && (web as Card & { confident?: boolean }).confident !== false &&
+        web.steps.length >= 2 && !(web.sub_recipes ?? []).length) {
+      card.steps = web.steps;
+      card.has_full_recipe = card.steps.length >= 2;
+      sourceUrl = sourceUrl ?? (web as Card & { source_url?: string | null }).source_url ?? null;
     }
   }
   return { card, sourceUrl };
