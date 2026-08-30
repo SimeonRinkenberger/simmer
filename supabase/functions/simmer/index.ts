@@ -543,21 +543,56 @@ async function webSearch(query: string): Promise<string[]> {
     ["https://www.mojeek.com/search?q=", /class="title"[^>]*href="([^"]+)"/g],
   ];
   for (const [base, re] of engines) {
-    try {
-      const r = await fetch(base + encodeURIComponent(query), {
-        headers: { "User-Agent": DESKTOP_UA, "Accept-Language": "en-US" },
-        signal: AbortSignal.timeout(10000),
-      });
-      const html = await r.text();
-      if (!r.ok || r.status === 202) { console.error("search engine", base, "status", r.status); continue; }
-      const urls = collectLinks(html, re);
-      if (urls.length) return urls;
-      console.error("search engine", base, "returned no links");
-    } catch (e) {
-      console.error("search engine failed", base, e);
+    // one retry after a pause: Brave 429s under bursts (e.g. saving many recipes at once)
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        const r = await fetch(base + encodeURIComponent(query), {
+          headers: { "User-Agent": DESKTOP_UA, "Accept-Language": "en-US" },
+          signal: AbortSignal.timeout(10000),
+        });
+        const html = await r.text();
+        if (r.status === 429 && attempt === 0) {
+          console.error("search engine", base, "429 — retrying in 3s");
+          await new Promise((res) => setTimeout(res, 3000));
+          continue;
+        }
+        if (!r.ok || r.status === 202) { console.error("search engine", base, "status", r.status); break; }
+        const urls = collectLinks(html, re);
+        if (urls.length) return urls;
+        console.error("search engine", base, "returned no links");
+        break;
+      } catch (e) {
+        console.error("search engine failed", base, e);
+        break;
+      }
     }
   }
   return [];
+}
+
+// Food blogs are almost all WordPress: /?s=<query> is a built-in site search that
+// works even when every external search engine is blocking or rate-limiting us.
+async function wpSiteSearch(host: string, title: string): Promise<string[]> {
+  try {
+    const r = await fetch(`https://${host.replace(/^www\./, "")}/?s=${encodeURIComponent(title)}`, {
+      headers: { "User-Agent": DESKTOP_UA, "Accept-Language": "en-US" },
+      signal: AbortSignal.timeout(10000),
+    });
+    if (!r.ok) return [];
+    const html = await r.text();
+    const re = new RegExp('href="(https?://(?:www\\.)?' + host.replace(/^www\./, "").replace(/\./g, "\\.") + '/[^"]{10,})"', "g");
+    const urls: string[] = [];
+    let m: RegExpExecArray | null;
+    while ((m = re.exec(html)) && urls.length < 6) {
+      const u = decodeEntities(m[1]).split("#")[0];
+      if (/\/(category|tag|author|page|feed|comments|wp-)|\?/.test(u)) continue;
+      if (!urls.includes(u)) urls.push(u);
+    }
+    return urls;
+  } catch (e) {
+    console.error("site search failed", host, e);
+    return [];
+  }
 }
 
 function parseLdRecipe(html: string): { name?: string; ingredients: string[]; steps: string[]; cuisine?: string } | null {
@@ -599,11 +634,16 @@ function parseLdRecipe(html: string): { name?: string; ingredients: string[]; st
 async function findRecipeViaSearch(
   title: string, caption: string | null, author: string | null,
 ): Promise<(Card & { source_url: string | null }) | null> {
-  const siteHint = caption?.match(/([a-z0-9-]+\.(?:com|net|org|co|blog|recipes?))\b/i)?.[1] ?? "";
+  const siteHint = caption?.match(/(?:www\.)?([a-z0-9-]+\.(?:com|net|org|co|blog|recipes?))\b/i)?.[1] ?? "";
   const query = `${title} recipe ${author ?? ""} ${siteHint}`.replace(/\s+/g, " ").trim();
-  const urls = await webSearch(query);
-  console.log("recipe search:", query, "->", urls.length, "results");
-  for (const u of urls.slice(0, 5)) {
+  let urls = await webSearch(query);
+  // the creator's own site (from the caption) is the best possible source — check it first
+  if (siteHint) {
+    const siteUrls = await wpSiteSearch(siteHint, title);
+    urls = [...siteUrls, ...urls.filter((u) => !siteUrls.includes(u))];
+  }
+  console.log("recipe search:", query, "->", urls.length, "candidates");
+  for (const u of urls.slice(0, 6)) {
     try {
       const r = await fetch(u, { headers: { "User-Agent": DESKTOP_UA }, signal: AbortSignal.timeout(10000) });
       if (!r.ok) continue;
@@ -963,7 +1003,7 @@ Deno.serve(async (req) => {
       const idMatch = sub.match(/^\/api\/recipes\/([0-9a-f-]{36})$/);
       if (idMatch && req.method === "PATCH") {
         const body = await req.json().catch(() => ({}));
-        const allowed = ["title", "category", "cuisine", "favorite", "ingredients", "steps", "tags"];
+        const allowed = ["title", "category", "cuisine", "favorite", "ingredients", "steps", "tags", "rating", "notes"];
         const patch: Record<string, unknown> = {};
         for (const k of allowed) if (k in body) patch[k] = body[k];
         const r = await fetch(`${REST}?id=eq.${idMatch[1]}`, {

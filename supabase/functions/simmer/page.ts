@@ -59,7 +59,9 @@ export const PAGE_HTML = String.raw`<!DOCTYPE html>
   .chips { display: flex; gap: 8px; overflow-x: auto; padding: 12px 16px 4px; scrollbar-width: none; }
   .chips::-webkit-scrollbar { display: none; }
   .chip { flex: 0 0 auto; border: 1px solid var(--line); background: var(--card); color: var(--text);
-    border-radius: 999px; padding: 7px 13px; font-size: 13.5px; font-weight: 600; }
+    border-radius: 999px; padding: 7px 13px; font-size: 13.5px; font-weight: 600;
+    transition: background-color .2s, color .2s, border-color .2s, transform .15s; }
+  .chip:active { transform: scale(.94); }
   .chip.active { background: var(--blue); border-color: var(--blue); color: #fff; }
   .chip .n { opacity: .6; font-weight: 500; margin-left: 3px; font-size: 12px; }
 
@@ -67,12 +69,29 @@ export const PAGE_HTML = String.raw`<!DOCTYPE html>
   @media (min-width: 640px) { .grid { grid-template-columns: repeat(3, 1fr); } }
   @media (min-width: 980px) { .grid { grid-template-columns: repeat(4, 1fr); } }
   .carditem { background: var(--card); border-radius: 20px; overflow: hidden; box-shadow: var(--shadow);
-    border: 1px solid var(--line); display: flex; flex-direction: column; cursor: pointer; }
+    border: 1px solid var(--line); display: flex; flex-direction: column; cursor: pointer;
+    transition: transform .18s ease, box-shadow .18s ease; }
+  .carditem:active { transform: scale(.965); }
+  @keyframes cardin { from { opacity: 0; transform: translateY(12px); } }
   .thumbwrap { position: relative; aspect-ratio: 4 / 5; background: linear-gradient(150deg, #EAEFF9, #F4D9D6); }
   .thumbwrap img { width: 100%; height: 100%; object-fit: cover; display: block; }
   .thumbwrap .noimg { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; font-size: 44px; }
   .fav { position: absolute; top: 8px; right: 8px; font-size: 17px; background: rgba(0,0,0,.35);
     border-radius: 999px; padding: 4px 7px; color: #fff; }
+  .ratepill { position: absolute; right: 8px; bottom: 8px; background: rgba(179,40,45,.88); color: #fff;
+    font-size: 11px; font-weight: 800; padding: 4px 8px; border-radius: 999px; letter-spacing: .3px; }
+  .stars { display: flex; gap: 4px; margin-bottom: 12px; }
+  .star { border: none; background: none; font-size: 30px; line-height: 1; color: var(--line); padding: 2px 4px; transition: color .15s; }
+  .star.on { color: #C9A227; }
+  .notesbox { width: 100%; min-height: 92px; border: 1px solid var(--line); border-radius: 14px;
+    background: var(--card); color: var(--text); padding: 12px 14px; font-size: 15px; font-family: inherit;
+    line-height: 1.5; resize: vertical; outline: none; }
+  .notesbox:focus { border-color: var(--blue); }
+  #ptr { position: fixed; top: calc(env(safe-area-inset-top) + 8px); left: 50%; margin-left: -18px;
+    width: 36px; height: 36px; border-radius: 999px; background: var(--card); box-shadow: 0 3px 14px rgba(38,48,76,.18);
+    display: flex; align-items: center; justify-content: center; z-index: 45;
+    transform: translateY(-70px); transition: transform .28s cubic-bezier(.22,.9,.3,1); }
+  #ptrspin { display: block; font-weight: 800; color: var(--accent); font-size: 17px; }
   .catpill { position: absolute; left: 8px; bottom: 8px; background: rgba(36,64,142,.85); color: #fff;
     font-size: 11px; font-weight: 700; padding: 4px 9px; border-radius: 999px; letter-spacing: .4px; }
   .cardbody { padding: 10px 12px 12px; }
@@ -87,14 +106,15 @@ export const PAGE_HTML = String.raw`<!DOCTYPE html>
 
   .overlay { position: fixed; inset: 0; z-index: 50; background: var(--bg); display: none;
     overflow-y: auto; -webkit-overflow-scrolling: touch; }
-  .overlay.open { display: block; animation: slideup .22s ease-out; }
-  @keyframes slideup { from { transform: translateY(30px); opacity: .4; } to { transform: none; opacity: 1; } }
+  .overlay.open { display: block; animation: slideup .32s cubic-bezier(.22,.9,.3,1); }
+  @keyframes slideup { from { transform: translateY(28px); opacity: .25; } to { transform: none; opacity: 1; } }
   .dtop { position: sticky; top: 0; z-index: 5; display: flex; align-items: center; justify-content: space-between;
     padding: calc(10px + env(safe-area-inset-top)) 12px 10px;
     background: color-mix(in srgb, var(--bg) 82%, transparent);
     -webkit-backdrop-filter: blur(14px); backdrop-filter: blur(14px); border-bottom: 1px solid var(--line); }
   .iconbtn { border: none; background: var(--card); color: var(--text); box-shadow: var(--shadow);
-    width: 36px; height: 36px; border-radius: 12px; font-size: 16px; }
+    width: 36px; height: 36px; border-radius: 12px; font-size: 16px; transition: transform .15s; }
+  .iconbtn:active, .addbtn:active, .whybtn:active, .cartbtn:active { transform: scale(.88); }
   .dactions { display: flex; gap: 8px; }
   .dcontent { padding: 16px 16px 60px; max-width: 720px; margin: 0 auto; }
   .videowrap { border-radius: 18px; overflow: hidden; background: #000; box-shadow: var(--shadow);
@@ -134,10 +154,12 @@ export const PAGE_HTML = String.raw`<!DOCTYPE html>
   details[open] summary::before { content: "▾ "; }
   .norecipe { background: var(--accent-soft); color: var(--text); border-radius: 14px; padding: 12px 14px; font-size: 14px; line-height: 1.5; }
 
-  .sheet { position: fixed; inset: 0; z-index: 60; background: rgba(0,0,0,.45); display: none;
-    align-items: flex-end; }
-  .sheet.open { display: flex; }
-  .sheetbody { background: var(--bg); border-radius: 22px 22px 0 0; width: 100%; padding: 20px 18px calc(24px + env(safe-area-inset-bottom)); }
+  .sheet { position: fixed; inset: 0; z-index: 60; background: rgba(20,24,40,.45); display: flex;
+    align-items: flex-end; opacity: 0; pointer-events: none; transition: opacity .25s ease; }
+  .sheet.open { opacity: 1; pointer-events: auto; }
+  .sheetbody { background: var(--bg); border-radius: 22px 22px 0 0; width: 100%; padding: 20px 18px calc(24px + env(safe-area-inset-bottom));
+    transform: translateY(100%); transition: transform .42s cubic-bezier(.32,.72,0,1); }
+  .sheet.open .sheetbody { transform: none; }
   .sheetbody h2 { margin: 0 0 4px; font-family: var(--serif); font-size: 21px; }
   .sheetbody p { margin: 0 0 14px; color: var(--muted); font-size: 13.5px; }
   .urlinput { width: 100%; border: 1px solid var(--line); border-radius: 12px; padding: 12px 14px;
@@ -194,6 +216,7 @@ export const PAGE_HTML = String.raw`<!DOCTYPE html>
 </style>
 </head>
 <body>
+<div id="ptr"><span id="ptrspin">↻</span></div>
 <header>
   <div class="titlerow">
     <div>
@@ -333,8 +356,12 @@ export const PAGE_HTML = String.raw`<!DOCTYPE html>
     $("empty").style.display = (state.view === "recipes" && !state.recipes.length) ? "block" : "none";
     $("count").textContent = state.recipes.length
       ? state.recipes.length + " recipe" + (state.recipes.length === 1 ? "" : "s") + " saved" : "your recipe library";
-    rows.forEach(function (r) {
+    rows.forEach(function (r, idx) {
       var card = el("div", "carditem");
+      if (state.animateNext) {
+        card.style.animation = "cardin .35s cubic-bezier(.22,.9,.3,1) both";
+        card.style.animationDelay = Math.min(idx * 26, 280) + "ms";
+      }
       var tw = el("div", "thumbwrap");
       if (r.thumb_url) {
         var img = document.createElement("img");
@@ -343,6 +370,7 @@ export const PAGE_HTML = String.raw`<!DOCTYPE html>
         tw.appendChild(img);
       } else tw.appendChild(el("div", "noimg", "🍽️"));
       if (r.favorite) tw.appendChild(el("div", "fav", "★"));
+      if (r.rating) tw.appendChild(el("div", "ratepill", "★ " + r.rating));
       tw.appendChild(el("div", "catpill", r.category));
       card.appendChild(tw);
       var body = el("div", "cardbody");
@@ -356,11 +384,11 @@ export const PAGE_HTML = String.raw`<!DOCTYPE html>
     });
   }
 
-  function render() { renderChips(); renderGrid(); }
+  function render() { renderChips(); renderGrid(); state.animateNext = false; }
 
   function load() {
     return api("recipes").then(function (rows) {
-      if (Array.isArray(rows)) { state.recipes = rows; render(); }
+      if (Array.isArray(rows)) { state.animateNext = true; state.recipes = rows; render(); }
       else toast(rows.message || "Could not load");
     }).catch(function () {});
   }
@@ -515,6 +543,42 @@ export const PAGE_HTML = String.raw`<!DOCTYPE html>
       c.appendChild(nb);
     }
 
+    var sMine = el("div", "section");
+    sMine.appendChild(el("h3", null, "My Rating & Notes"));
+    var starRow = el("div", "stars");
+    function paintStars() {
+      starRow.innerHTML = "";
+      for (var si = 1; si <= 5; si++) (function (n) {
+        var on = (r.rating || 0) >= n;
+        var sb = el("button", "star" + (on ? " on" : ""), on ? "★" : "☆");
+        sb.onclick = function () {
+          r.rating = (r.rating === n) ? null : n;
+          paintStars();
+          var target = starRow.children[n - 1];
+          if (target && target.animate) target.animate(
+            [{ transform: "scale(1)" }, { transform: "scale(1.35)" }, { transform: "scale(1)" }],
+            { duration: 220, easing: "ease-out" });
+          api("recipes/" + r.id, { method: "PATCH", body: JSON.stringify({ rating: r.rating }) }).then(load);
+        };
+        starRow.appendChild(sb);
+      })(si);
+    }
+    paintStars();
+    sMine.appendChild(starRow);
+    var ta = document.createElement("textarea");
+    ta.className = "notesbox";
+    ta.placeholder = "What did you change? How did it turn out?";
+    ta.value = r.notes || "";
+    ta.onblur = function () {
+      var v = ta.value.trim();
+      if (v === (r.notes || "")) return;
+      r.notes = v;
+      api("recipes/" + r.id, { method: "PATCH", body: JSON.stringify({ notes: v }) })
+        .then(function () { toast("Notes saved"); load(); });
+    };
+    sMine.appendChild(ta);
+    c.appendChild(sMine);
+
     if (r.caption) {
       var s3 = el("div", "section");
       var d = document.createElement("details");
@@ -576,6 +640,43 @@ export const PAGE_HTML = String.raw`<!DOCTYPE html>
     if (!document.hidden && KEY) { load(); loadGrocery(); }
   });
   window.addEventListener("pageshow", function (e) { if (e.persisted && KEY) { load(); loadGrocery(); } });
+
+  // ---------- pull down to refresh ----------
+  var ptrStartY = null, ptrDist = 0;
+  function overlayShowing() {
+    return $("detail").classList.contains("open") || document.querySelector(".sheet.open");
+  }
+  document.addEventListener("touchstart", function (e) {
+    if (window.scrollY > 2 || overlayShowing() || e.touches.length !== 1) { ptrStartY = null; return; }
+    ptrStartY = e.touches[0].clientY; ptrDist = 0;
+  }, { passive: true });
+  document.addEventListener("touchmove", function (e) {
+    if (ptrStartY === null) return;
+    var dy = e.touches[0].clientY - ptrStartY;
+    var p = $("ptr");
+    if (dy <= 0 || window.scrollY > 2) { ptrDist = 0; p.style.transform = "translateY(-70px)"; return; }
+    ptrDist = Math.min(dy * 0.45, 95);
+    p.style.transition = "none";
+    p.style.transform = "translateY(" + (ptrDist - 58) + "px)";
+    $("ptrspin").style.transform = "rotate(" + Math.round(ptrDist * 4) + "deg)";
+  }, { passive: true });
+  document.addEventListener("touchend", function () {
+    if (ptrStartY === null) return;
+    ptrStartY = null;
+    var p = $("ptr");
+    p.style.transition = "";
+    if (ptrDist >= 55) {
+      p.style.transform = "translateY(14px)";
+      $("ptrspin").classList.add("spin");
+      Promise.all([load(), loadGrocery()]).then(function () {
+        $("ptrspin").classList.remove("spin");
+        p.style.transform = "translateY(-70px)";
+      });
+    } else {
+      p.style.transform = "translateY(-70px)";
+    }
+    ptrDist = 0;
+  });
 
   // ---------- grocery list ----------
   function loadGrocery() {
