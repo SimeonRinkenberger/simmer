@@ -1,0 +1,6 @@
+project_id = "simmer"
+
+[functions.simmer]
+enabled = true
+verify_jwt = false
+entrypoint = "./functions/simmer/index.ts"
