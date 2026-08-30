@@ -13,17 +13,23 @@ export const PAGE_HTML = String.raw`<!DOCTYPE html>
 <link rel="apple-touch-icon" href="icon.png">
 <link rel="icon" href="icon.png">
 <!-- No web-app manifest on purpose: iOS would use its start_url and drop the ?key= from the installed app's launch URL. -->
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Playfair+Display:ital,wght@0,600;0,700;1,600&display=swap" rel="stylesheet">
 <style>
   :root {
-    --bg: #FAF6F1; --card: #FFFFFF; --text: #2B2320; --muted: #8A7E74;
-    --accent: #E1572F; --accent-soft: #FBE9E2; --line: #EFE7DE;
-    --shadow: 0 2px 12px rgba(60,40,20,.07);
+    --bg: #FBF8F1; --card: #FFFFFF; --text: #26304C; --muted: #8E93A6;
+    --accent: #B3282D; --accent-soft: #F8EAE7;
+    --blue: #24408E; --blue-soft: #EAEFF9;
+    --line: #ECE7DB; --shadow: 0 1px 10px rgba(38,48,76,.06);
+    --serif: "Playfair Display", Georgia, "Times New Roman", serif;
   }
   @media (prefers-color-scheme: dark) {
     :root {
-      --bg: #171310; --card: #241E19; --text: #F3EDE7; --muted: #A79A8E;
-      --accent: #FF7A50; --accent-soft: #3A2A22; --line: #322A24;
-      --shadow: 0 2px 12px rgba(0,0,0,.35);
+      --bg: #111827; --card: #1B2540; --text: #EDF0F9; --muted: #99A2BD;
+      --accent: #E4646B; --accent-soft: #3B2530;
+      --blue: #93ACEC; --blue-soft: #24345C;
+      --line: #2B3757; --shadow: 0 2px 12px rgba(0,0,0,.4);
     }
   }
   * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
@@ -36,7 +42,7 @@ export const PAGE_HTML = String.raw`<!DOCTYPE html>
     -webkit-backdrop-filter: blur(14px); backdrop-filter: blur(14px);
     padding: calc(10px + env(safe-area-inset-top)) 16px 10px; border-bottom: 1px solid var(--line); }
   .titlerow { display: flex; align-items: center; justify-content: space-between; }
-  h1 { font-size: 26px; margin: 0; letter-spacing: -.5px; font-weight: 800; }
+  h1 { font-family: var(--serif); font-size: 28px; margin: 0; letter-spacing: .2px; font-weight: 700; }
   h1 .flame { font-size: 22px; }
   .count { color: var(--muted); font-size: 13px; margin-top: 1px; }
   .addbtn { width: 38px; height: 38px; border-radius: 12px; border: none; background: var(--accent);
@@ -54,21 +60,21 @@ export const PAGE_HTML = String.raw`<!DOCTYPE html>
   .chips::-webkit-scrollbar { display: none; }
   .chip { flex: 0 0 auto; border: 1px solid var(--line); background: var(--card); color: var(--text);
     border-radius: 999px; padding: 7px 13px; font-size: 13.5px; font-weight: 600; }
-  .chip.active { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .chip.active { background: var(--blue); border-color: var(--blue); color: #fff; }
   .chip .n { opacity: .6; font-weight: 500; margin-left: 3px; font-size: 12px; }
 
-  .grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 12px; padding: 12px 16px; }
+  .grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 14px; padding: 14px 16px; }
   @media (min-width: 640px) { .grid { grid-template-columns: repeat(3, 1fr); } }
   @media (min-width: 980px) { .grid { grid-template-columns: repeat(4, 1fr); } }
-  .carditem { background: var(--card); border-radius: 18px; overflow: hidden; box-shadow: var(--shadow);
-    display: flex; flex-direction: column; cursor: pointer; }
-  .thumbwrap { position: relative; aspect-ratio: 4 / 5; background: linear-gradient(135deg, #E8B08A, #D96A43); }
+  .carditem { background: var(--card); border-radius: 20px; overflow: hidden; box-shadow: var(--shadow);
+    border: 1px solid var(--line); display: flex; flex-direction: column; cursor: pointer; }
+  .thumbwrap { position: relative; aspect-ratio: 4 / 5; background: linear-gradient(150deg, #EAEFF9, #F4D9D6); }
   .thumbwrap img { width: 100%; height: 100%; object-fit: cover; display: block; }
   .thumbwrap .noimg { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; font-size: 44px; }
   .fav { position: absolute; top: 8px; right: 8px; font-size: 17px; background: rgba(0,0,0,.35);
     border-radius: 999px; padding: 4px 7px; color: #fff; }
-  .catpill { position: absolute; left: 8px; bottom: 8px; background: rgba(0,0,0,.55); color: #fff;
-    font-size: 11px; font-weight: 700; padding: 4px 9px; border-radius: 999px; letter-spacing: .2px; }
+  .catpill { position: absolute; left: 8px; bottom: 8px; background: rgba(36,64,142,.85); color: #fff;
+    font-size: 11px; font-weight: 700; padding: 4px 9px; border-radius: 999px; letter-spacing: .4px; }
   .cardbody { padding: 10px 12px 12px; }
   .cardtitle { font-size: 14.5px; font-weight: 700; line-height: 1.25; display: -webkit-box;
     -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
@@ -76,7 +82,7 @@ export const PAGE_HTML = String.raw`<!DOCTYPE html>
 
   .empty { text-align: center; padding: 60px 30px; color: var(--muted); }
   .empty .big { font-size: 56px; }
-  .empty h2 { color: var(--text); font-size: 19px; margin: 12px 0 6px; }
+  .empty h2 { color: var(--text); font-family: var(--serif); font-size: 20px; margin: 12px 0 6px; }
   .empty p { font-size: 14px; line-height: 1.5; margin: 4px 0; }
 
   .overlay { position: fixed; inset: 0; z-index: 50; background: var(--bg); display: none;
@@ -95,15 +101,15 @@ export const PAGE_HTML = String.raw`<!DOCTYPE html>
     aspect-ratio: 9 / 14; max-height: 62vh; margin: 0 auto; }
   .videowrap iframe { width: 100%; height: 100%; border: 0; display: block; }
   .dtitlerow { display: flex; align-items: flex-start; gap: 8px; margin-top: 16px; }
-  .dtitle { font-size: 22px; font-weight: 800; letter-spacing: -.4px; line-height: 1.2; margin: 0; flex: 1; }
+  .dtitle { font-family: var(--serif); font-size: 25px; font-weight: 700; letter-spacing: .1px; line-height: 1.22; margin: 0; flex: 1; }
   .editbtn { border: none; background: none; color: var(--muted); font-size: 15px; padding: 4px; }
   .metarow { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; align-items: center; }
   .mchip { background: var(--card); border: 1px solid var(--line); border-radius: 999px;
     padding: 7px 12px; font-size: 13px; font-weight: 600; color: var(--text); }
-  .mchip.link { color: var(--accent); text-decoration: none; }
+  .mchip.link { color: var(--blue); text-decoration: none; }
   select.mchip { -webkit-appearance: none; appearance: none; }
   .section { margin-top: 22px; }
-  .section h3 { font-size: 13px; text-transform: uppercase; letter-spacing: 1px; color: var(--muted); margin: 0 0 10px; }
+  .section h3 { font-size: 12.5px; text-transform: uppercase; letter-spacing: 1.6px; color: var(--blue); margin: 0 0 10px; }
   .ing { display: flex; align-items: flex-start; gap: 10px; padding: 9px 0; border-bottom: 1px solid var(--line); font-size: 15px; }
   .ing:last-child { border-bottom: none; }
   .ing input { width: 18px; height: 18px; accent-color: var(--accent); margin-top: 1px; }
@@ -111,8 +117,15 @@ export const PAGE_HTML = String.raw`<!DOCTYPE html>
   .steps { padding-left: 0; margin: 0; counter-reset: st; list-style: none; }
   .steps li { counter-increment: st; display: flex; gap: 12px; padding: 8px 0; font-size: 15px; line-height: 1.5; }
   .steps li::before { content: counter(st); flex: 0 0 26px; height: 26px; border-radius: 999px;
-    background: var(--accent-soft); color: var(--accent); font-weight: 800; font-size: 13px;
+    background: var(--blue-soft); color: var(--blue); font-weight: 800; font-size: 13px;
     display: flex; align-items: center; justify-content: center; }
+  .steps li .steptext { flex: 1; }
+  .whybtn { flex: 0 0 24px; width: 24px; height: 24px; border-radius: 999px; border: none;
+    background: var(--accent-soft); color: var(--accent); font-size: 13px; font-weight: 800;
+    line-height: 1; margin-top: 2px; }
+  .expstep { font-style: italic; color: var(--muted); font-size: 14px; margin-bottom: 12px;
+    border-left: 3px solid var(--blue-soft); padding-left: 10px; }
+  .expbody { font-size: 15px; line-height: 1.6; min-height: 48px; white-space: pre-wrap; }
   .capbox { background: var(--card); border-radius: 14px; padding: 12px 14px; font-size: 14px;
     line-height: 1.55; color: var(--muted); white-space: pre-wrap; word-break: break-word; }
   details summary { font-size: 13px; text-transform: uppercase; letter-spacing: 1px; color: var(--muted);
@@ -125,7 +138,7 @@ export const PAGE_HTML = String.raw`<!DOCTYPE html>
     align-items: flex-end; }
   .sheet.open { display: flex; }
   .sheetbody { background: var(--bg); border-radius: 22px 22px 0 0; width: 100%; padding: 20px 18px calc(24px + env(safe-area-inset-bottom)); }
-  .sheetbody h2 { margin: 0 0 4px; font-size: 19px; }
+  .sheetbody h2 { margin: 0 0 4px; font-family: var(--serif); font-size: 21px; }
   .sheetbody p { margin: 0 0 14px; color: var(--muted); font-size: 13.5px; }
   .urlinput { width: 100%; border: 1px solid var(--line); border-radius: 12px; padding: 12px 14px;
     font-size: 15px; background: var(--card); color: var(--text); outline: none; }
@@ -231,6 +244,14 @@ export const PAGE_HTML = String.raw`<!DOCTYPE html>
     <p>Paste an Instagram or TikTok link.</p>
     <input class="urlinput" id="urlinput" type="url" placeholder="https://www.instagram.com/reel/…" autocapitalize="off" autocorrect="off">
     <button class="primary" id="savebtn">Save recipe</button>
+  </div>
+</div>
+
+<div class="sheet" id="explainsheet">
+  <div class="sheetbody">
+    <h2>What does this mean?</h2>
+    <div class="expstep" id="expstep"></div>
+    <div class="expbody" id="expbody"></div>
   </div>
 </div>
 
@@ -474,7 +495,15 @@ export const PAGE_HTML = String.raw`<!DOCTYPE html>
       var s2 = el("div", "section");
       s2.appendChild(el("h3", null, "Steps"));
       var ol = el("ol", "steps");
-      steps.forEach(function (st) { var li = el("li"); li.appendChild(el("span", null, st)); ol.appendChild(li); });
+      steps.forEach(function (st) {
+        var li = el("li");
+        li.appendChild(el("span", "steptext", st));
+        var wb = el("button", "whybtn", "?");
+        wb.title = "Explain this step";
+        wb.onclick = function (ev) { ev.stopPropagation(); explainStep(st, r); };
+        li.appendChild(wb);
+        ol.appendChild(li);
+      });
       s2.appendChild(ol);
       c.appendChild(s2);
     }
@@ -610,6 +639,25 @@ export const PAGE_HTML = String.raw`<!DOCTYPE html>
       toast((res && res.message) || "Could not add"); return false;
     }).catch(function () { toast("Network error"); return false; });
   }
+
+  // ---------- "what does this mean?" ----------
+  var expCache = {};
+  function explainStep(step, recipe) {
+    var sh = $("explainsheet");
+    $("expstep").textContent = step;
+    var bodyEl = $("expbody");
+    sh.classList.add("open");
+    var ck = (recipe.title || "") + "|" + step;
+    if (expCache[ck]) { bodyEl.textContent = expCache[ck]; return; }
+    bodyEl.textContent = "Asking the kitchen coach…";
+    api("explain", { method: "POST", body: JSON.stringify({ step: step, title: recipe.title }) }).then(function (res) {
+      if (res && res.explanation) { expCache[ck] = res.explanation; bodyEl.textContent = res.explanation; }
+      else bodyEl.textContent = (res && res.message) || "Couldn't get an explanation — try again.";
+    }).catch(function () { bodyEl.textContent = "Network error — try again."; });
+  }
+  $("explainsheet").addEventListener("click", function (e) {
+    if (e.target === $("explainsheet")) $("explainsheet").classList.remove("open");
+  });
 
   $("gclear").onclick = function () {
     if (!state.grocery.some(function (g) { return g.checked; })) { toast("Nothing checked yet"); return; }

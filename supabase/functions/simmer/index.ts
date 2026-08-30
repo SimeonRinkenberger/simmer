@@ -862,6 +862,54 @@ Deno.serve(async (req) => {
           return json({ status: "cleared" });
         }
       }
+      // ----- "what does this step mean?" for beginner cooks -----
+      if (req.method === "POST" && sub === "/api/explain") {
+        const body = await req.json().catch(() => ({}));
+        const step = String(body.step ?? "").slice(0, 500);
+        const title = String(body.title ?? "").slice(0, 150);
+        if (!step) return json({ status: "error", message: "No step given." });
+        if (!GEMINI_API_KEY && !ANTHROPIC_API_KEY) return json({ status: "error", message: "No AI key configured." });
+        const system =
+          "You are a warm, patient cooking teacher helping a beginner home cook. " +
+          "Explain the given recipe instruction in plain, friendly language: what it means, how to actually do it, " +
+          "and how to tell when it's done correctly. Mention one common beginner mistake if helpful. " +
+          "3-5 short sentences of plain text. No markdown, no lists, no headings.";
+        const user = (title ? `Recipe: ${title}\n` : "") + `Instruction: "${step}"`;
+        let text = "";
+        try {
+          if (ANTHROPIC_API_KEY) {
+            const r = await fetch("https://api.anthropic.com/v1/messages", {
+              method: "POST",
+              headers: { "x-api-key": ANTHROPIC_API_KEY, "anthropic-version": "2023-06-01", "content-type": "application/json" },
+              body: JSON.stringify({ model: CLAUDE_MODEL, max_tokens: 500, system, messages: [{ role: "user", content: user }] }),
+            });
+            if (r.ok) text = (await r.json()).content?.[0]?.text ?? "";
+            else console.error("explain anthropic error", r.status, await r.text());
+          } else {
+            const r = await fetch(
+              `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent`,
+              {
+                method: "POST",
+                headers: { "content-type": "application/json", "x-goog-api-key": GEMINI_API_KEY },
+                body: JSON.stringify({
+                  systemInstruction: { parts: [{ text: system }] },
+                  contents: [{ role: "user", parts: [{ text: user }] }],
+                  generationConfig: { maxOutputTokens: 2000 },
+                }),
+              },
+            );
+            if (r.ok) {
+              const data = await r.json();
+              text = data.candidates?.[0]?.content?.parts?.map((p: { text?: string }) => p.text ?? "").join("") ?? "";
+            } else console.error("explain gemini error", r.status, await r.text());
+          }
+        } catch (e) {
+          console.error("explain failed", e);
+        }
+        if (!text.trim()) return json({ status: "error", message: "Couldn't get an explanation right now — try again." });
+        return json({ status: "ok", explanation: text.trim() });
+      }
+
       const gidMatch = sub.match(/^\/api\/grocery\/([0-9a-f-]{36})$/);
       if (gidMatch && req.method === "DELETE") {
         const dr = await fetch(`${GREST}?id=eq.${gidMatch[1]}`, { method: "DELETE", headers: dbHeaders });
