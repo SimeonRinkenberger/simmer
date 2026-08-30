@@ -574,7 +574,10 @@ async function webSearch(query: string): Promise<string[]> {
 // works even when every external search engine is blocking or rate-limiting us.
 async function wpSiteSearch(host: string, title: string): Promise<string[]> {
   try {
-    const r = await fetch(`https://${host.replace(/^www\./, "")}/?s=${encodeURIComponent(title)}`, {
+    // WordPress search ANDs every term, and captions abbreviate ("parm" won't match
+    // "parmesan") — so search with the full-length words only
+    const q = (title.toLowerCase().match(/[a-z]{5,}/g) ?? []).slice(0, 5).join(" ") || title;
+    const r = await fetch(`https://${host.replace(/^www\./, "")}/?s=${encodeURIComponent(q)}`, {
       headers: { "User-Agent": DESKTOP_UA, "Accept-Language": "en-US" },
       signal: AbortSignal.timeout(10000),
     });
@@ -653,7 +656,7 @@ async function findRecipeViaSearch(
     .map((x) => x.u);
   console.log("recipe search:", query, "->", urls.length, "candidates; top:", ranked[0] ?? "none");
 
-  let fallback: (Card & { source_url: string | null }) | null = null;
+  let fallback: (Card & { source_url: string | null; confident?: boolean }) | null = null;
   for (const u of ranked.slice(0, 6)) {
     try {
       const r = await fetch(u, { headers: { "User-Agent": DESKTOP_UA }, signal: AbortSignal.timeout(10000) });
@@ -661,6 +664,9 @@ async function findRecipeViaSearch(
       const rec = parseLdRecipe(await r.text());
       if (rec) {
         const t = cleanTitle(rec.name ?? title) || title;
+        // accept confidently only when the URL or the recipe's own name really matches the dish
+        const need = Math.min(words.length, 3);
+        const confident = words.length < 2 || score(u) >= need || score(rec.name ?? "") >= need;
         const cardOut = {
           title: t,
           category: catFor(t) ?? catFor(title) ?? "Other",
@@ -670,10 +676,10 @@ async function findRecipeViaSearch(
           tags: [],
           has_full_recipe: rec.ingredients.length >= 3 && rec.steps.length >= 2,
           source_url: u,
+          confident,
         };
-        // accept confidently only when the URL or the recipe's own name matches the dish
-        if (words.length < 2 || score(u) >= 2 || score(rec.name ?? "") >= 2) return cardOut;
-        if (!fallback) fallback = cardOut;
+        if (confident) return cardOut;
+        if (!fallback && score(u) >= 1) fallback = cardOut;
       }
     } catch { /* try next result */ }
   }
@@ -753,7 +759,8 @@ async function buildCard(meta: Meta, platform: string, kind = "reel"): Promise<{
         if (!card.cuisine) card.cuisine = web.cuisine;
         if (card.category === "Other") card.category = web.category;
         const shouty = card.title === card.title.toUpperCase() && /[A-Z]/.test(card.title);
-        if (web.title && (card.title === "Saved recipe" || card.title.startsWith("Recipe from ") || card.title.length > 60 || shouty)) {
+        const conf = (web as Card & { confident?: boolean }).confident !== false;
+        if (conf && web.title && (card.title === "Saved recipe" || card.title.startsWith("Recipe from ") || card.title.length > 60 || shouty)) {
           card.title = web.title;
         }
         if (!card.tags.length) card.tags = web.tags;
