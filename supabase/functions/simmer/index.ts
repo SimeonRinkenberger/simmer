@@ -170,7 +170,9 @@ async function igMeta(p: Parsed): Promise<Meta> {
         const text = decodeEntities(
           capDiv[1].replace(/<br\s*\/?>/gi, "\n").replace(/<[^>]+>/g, " "),
         ).replace(/[ \t]+/g, " ").replace(/\n{3,}/g, "\n\n").trim();
-        if (text && (!caption || text.length > caption.length)) caption = text;
+        // og: tags collapse newlines; a caption WITH line structure beats a longer flat one
+        const structured = text.includes("\n") && !(caption ?? "").includes("\n");
+        if (text && (!caption || structured || text.length > caption.length)) caption = text;
       }
       if (!author) {
         const a = html.match(/class="UsernameText"[^>]*>([^<]+)</);
@@ -288,7 +290,11 @@ function heuristicCard(caption: string | null, author: string | null): Card {
   };
   if (!caption) return empty;
 
-  const lines = caption.split("\n").map((l) => l.trim());
+  let lines = caption.split("\n").map((l) => l.trim());
+  // og: captions sometimes arrive with newlines collapsed — recover structure from bullet dashes
+  if (lines.length < 4 && caption.length > 200) {
+    lines = caption.split(/\s+[-•▪]\s+/).map((l) => l.trim());
+  }
 
   // title: first meaningful line that isn't a section header
   let title = "";
@@ -430,22 +436,32 @@ async function parseWithClaude(caption: string, author: string | null, platform:
 
 async function parseWithGemini(caption: string, author: string | null, platform: string): Promise<Record<string, unknown> | null> {
   const { system, user } = buildPrompt(caption, author, platform);
-  const r = await fetch(
-    `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent`,
-    {
-      method: "POST",
-      headers: { "content-type": "application/json", "x-goog-api-key": GEMINI_API_KEY },
-      body: JSON.stringify({
-        systemInstruction: { parts: [{ text: system }] },
-        contents: [{ role: "user", parts: [{ text: user }] }],
-        generationConfig: { responseMimeType: "application/json", maxOutputTokens: 4000 },
-      }),
-    },
-  );
-  if (!r.ok) { console.error("gemini error", r.status, await r.text()); return null; }
-  const data = await r.json();
-  const text = data.candidates?.[0]?.content?.parts?.map((p: { text?: string }) => p.text ?? "").join("") ?? "";
-  return parseJsonLoose(text);
+  // free tier rate-limits during bursts (many saves at once) — retry once
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const r = await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json", "x-goog-api-key": GEMINI_API_KEY },
+        body: JSON.stringify({
+          systemInstruction: { parts: [{ text: system }] },
+          contents: [{ role: "user", parts: [{ text: user }] }],
+          generationConfig: { responseMimeType: "application/json", maxOutputTokens: 4000 },
+        }),
+      },
+    );
+    if ((r.status === 429 || r.status >= 500) && attempt === 0) {
+      console.error("gemini", r.status, "— retrying in 3s");
+      await r.body?.cancel();
+      await new Promise((res) => setTimeout(res, 3000));
+      continue;
+    }
+    if (!r.ok) { console.error("gemini error", r.status, await r.text()); return null; }
+    const data = await r.json();
+    const text = data.candidates?.[0]?.content?.parts?.map((p: { text?: string }) => p.text ?? "").join("") ?? "";
+    return parseJsonLoose(text);
+  }
+  return null;
 }
 
 // When the caption has no recipe ("comment RECIPE", "it's on my blog"), let Gemini
@@ -617,13 +633,16 @@ async function wpSiteSearch(host: string, title: string): Promise<string[]> {
   }
 }
 
-function parseLdRecipe(html: string): { name?: string; ingredients: string[]; steps: string[]; cuisine?: string } | null {
+type LdRecipe = { name?: string; ingredients: string[]; steps: string[]; cuisine?: string };
+
+function parseLdRecipes(html: string): LdRecipe[] {
+  const out: LdRecipe[] = [];
   const blocks = [...html.matchAll(/<script[^>]+application\/ld\+json[^>]*>([\s\S]*?)<\/script>/gi)];
   for (const b of blocks) {
     let data: unknown;
     try { data = JSON.parse(b[1].trim()); } catch { continue; }
     const queue: any[] = Array.isArray(data) ? [...data] : [data];
-    while (queue.length) {
+    while (queue.length && out.length < 10) {
       const node = queue.shift();
       if (!node || typeof node !== "object") continue;
       if (Array.isArray(node["@graph"])) queue.push(...node["@graph"]);
@@ -641,16 +660,28 @@ function parseLdRecipe(html: string): { name?: string; ingredients: string[]; st
       };
       walk(node.recipeInstructions);
       if (ingredients.length >= 3) {
-        return {
+        out.push({
           name: node.name ? decodeEntities(String(node.name)) : undefined,
           ingredients,
           steps,
           cuisine: Array.isArray(node.recipeCuisine) ? String(node.recipeCuisine[0]) : (node.recipeCuisine ? String(node.recipeCuisine) : undefined),
-        };
+        });
       }
     }
   }
-  return null;
+  return out;
+}
+
+// Roundup listicles publish fake Recipe schema ("ingredients" = a list of dish names,
+// steps = "pick your favorite from the list above"). Reject those.
+function plausibleRecipe(ings: string[], steps: string[]): boolean {
+  if (ings.length < 3) return false;
+  const withQty = ings.filter((i) =>
+    /\d|\b(cups?|tbsps?|tsps?|oz|ounces?|grams?|kg|ml|lbs?|pounds?|cloves?|pinch|dash|cans?|salt|pepper|butter|oil|to taste)\b/i.test(i)).length;
+  if (withQty / ings.length < 0.4) return false;
+  if (steps.length > 0 && steps.length <= 4 &&
+    /favou?rite|list above|recipes? (from|in) th(e|is) list|choose one|roundup/i.test(steps.join(" "))) return false;
+  return true;
 }
 
 async function findRecipeViaSearch(
@@ -680,26 +711,48 @@ async function findRecipeViaSearch(
     try {
       const r = await fetch(u, { headers: { "User-Agent": DESKTOP_UA }, signal: AbortSignal.timeout(10000) });
       if (!r.ok) continue;
-      const rec = parseLdRecipe(await r.text());
-      if (rec) {
-        const t = cleanTitle(rec.name ?? title) || title;
-        // accept confidently only when the URL or the recipe's own name really matches the dish
-        const need = Math.min(words.length, 3);
-        const confident = words.length < 2 || score(u) >= need || score(rec.name ?? "") >= need;
+      const recs = parseLdRecipes(await r.text()).filter((rec) => plausibleRecipe(rec.ingredients, rec.steps));
+      if (!recs.length) continue;
+      const need = Math.min(words.length, 3);
+
+      // a page with several real recipes (a meal-prep blog post) becomes a Meal Prep card
+      if (recs.length > 1) {
+        const confident = words.length < 2 || score(u) >= need ||
+          recs.some((rec) => score(rec.name ?? "") >= need);
         const cardOut = {
-          title: t,
-          category: catFor(t) ?? catFor(title) ?? "Other",
-          cuisine: rec.cuisine ?? cuisineFor(t),
-          ingredients: rec.ingredients.slice(0, 60),
-          steps: rec.steps.slice(0, 40),
-          tags: [],
-          has_full_recipe: rec.ingredients.length >= 3 && rec.steps.length >= 2,
+          title, category: "Meal Prep", cuisine: null,
+          ingredients: [] as string[], steps: [] as string[], tags: [] as string[],
+          has_full_recipe: true,
+          sub_recipes: recs.slice(0, 12).map((rec, i) => ({
+            title: cleanTitle(rec.name ?? "Recipe " + (i + 1)),
+            ingredients: rec.ingredients.slice(0, 60),
+            steps: rec.steps.slice(0, 40),
+          })),
           source_url: u,
           confident,
         };
         if (confident) return cardOut;
         if (!fallback && score(u) >= 1) fallback = cardOut;
+        continue;
       }
+
+      const rec = recs[0];
+      const t = cleanTitle(rec.name ?? title) || title;
+      // accept confidently only when the URL or the recipe's own name really matches the dish
+      const confident = words.length < 2 || score(u) >= need || score(rec.name ?? "") >= need;
+      const cardOut = {
+        title: t,
+        category: catFor(t) ?? catFor(title) ?? "Other",
+        cuisine: rec.cuisine ?? cuisineFor(t),
+        ingredients: rec.ingredients.slice(0, 60),
+        steps: rec.steps.slice(0, 40),
+        tags: [],
+        has_full_recipe: rec.ingredients.length >= 3 && rec.steps.length >= 2,
+        source_url: u,
+        confident,
+      };
+      if (confident) return cardOut;
+      if (!fallback && score(u) >= 1) fallback = cardOut;
     } catch { /* try next result */ }
   }
   return fallback;
@@ -772,6 +825,14 @@ async function buildCard(meta: Meta, platform: string, kind = "reel"): Promise<{
     const attempts = kind === "p" ? [fromImage, fromWeb] : [fromWeb, fromImage];
     for (const attempt of attempts) {
       const web = await attempt();
+      if (web && (web.sub_recipes ?? []).length > 0) {
+        card.sub_recipes = web.sub_recipes;
+        card.category = "Meal Prep";
+        card.has_full_recipe = true;
+        if (!card.tags.length) card.tags = web.tags;
+        sourceUrl = (web as Card & { source_url?: string | null }).source_url ?? null;
+        break;
+      }
       if (web && web.ingredients.length >= 3) {
         card.ingredients = web.ingredients;
         card.steps = web.steps;
