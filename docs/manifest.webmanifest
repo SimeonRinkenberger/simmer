@@ -1,9 +1,0 @@
-{
-  "name": "Simmer",
-  "short_name": "Simmer",
-  "display": "standalone",
-  "background_color": "#FAF6F1",
-  "theme_color": "#E1572F",
-  "start_url": ".",
-  "icons": [{ "src": "icon.png", "sizes": "512x512", "type": "image/png" }]
-}

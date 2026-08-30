@@ -10,7 +10,7 @@
 <meta name="apple-mobile-web-app-title" content="Simmer">
 <link rel="apple-touch-icon" href="icon.png">
 <link rel="icon" href="icon.png">
-<link rel="manifest" href="manifest.webmanifest">
+<!-- No web-app manifest on purpose: iOS would use its start_url and drop the ?key= from the installed app's launch URL. -->
 <style>
   :root {
     --bg: #FAF6F1; --card: #FFFFFF; --text: #2B2320; --muted: #8A7E74;
@@ -173,6 +173,15 @@
     <p>Paste an Instagram or TikTok link.</p>
     <input class="urlinput" id="urlinput" type="url" placeholder="https://www.instagram.com/reel/…" autocapitalize="off" autocorrect="off">
     <button class="primary" id="savebtn">Save recipe</button>
+  </div>
+</div>
+
+<div class="sheet" id="keysheet">
+  <div class="sheetbody">
+    <h2>Connect your app</h2>
+    <p>One-time setup: paste your Simmer link (or just the key part after ?key=).</p>
+    <input class="urlinput" id="keyinput" type="text" placeholder="https://…?key=… or the key itself" autocapitalize="off" autocorrect="off">
+    <button class="primary" id="keysave">Connect</button>
   </div>
 </div>
 
@@ -441,7 +450,18 @@
     $("hint").classList.remove("show"); localStorage.setItem("simmer_hint_done", "1");
   };
 
-  if (!KEY) toast("Missing key — open the app from your saved link");
+  $("keysave").onclick = function () {
+    var v = $("keyinput").value.trim();
+    var m = v.match(/key=([0-9a-fA-F]{16,})/) || v.match(/^([0-9a-fA-F]{16,})$/);
+    if (!m) { toast("That doesn't look like a key or a Simmer link"); return; }
+    KEY = m[1];
+    try { localStorage.setItem("simmer_key", KEY); } catch (e) {}
+    $("keysheet").classList.remove("open");
+    toast("Connected!");
+    load();
+  };
+
+  if (!KEY) $("keysheet").classList.add("open");
   else load();
 })();
 </script>
