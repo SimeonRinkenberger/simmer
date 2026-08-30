@@ -1168,10 +1168,20 @@ Deno.serve(async (req) => {
           if (!pr.ok) throw new Error(await pr.text());
           return json({ status: "ok" });
         }
-        if (req.method === "DELETE" && url.searchParams.get("checked") === "true") {
-          const dr = await fetch(`${GREST}?checked=eq.true`, { method: "DELETE", headers: dbHeaders });
-          if (!dr.ok) throw new Error(await dr.text());
-          return json({ status: "cleared" });
+        if (req.method === "DELETE") {
+          const idsParam = url.searchParams.get("ids");
+          if (idsParam) {
+            const ids = idsParam.split(",").filter((x) => /^[0-9a-f-]{36}$/.test(x));
+            if (!ids.length) return json({ status: "error", message: "No ids." });
+            const dr = await fetch(`${GREST}?id=in.(${ids.join(",")})`, { method: "DELETE", headers: dbHeaders });
+            if (!dr.ok) throw new Error(await dr.text());
+            return json({ status: "removed" });
+          }
+          if (url.searchParams.get("checked") === "true") {
+            const dr = await fetch(`${GREST}?checked=eq.true`, { method: "DELETE", headers: dbHeaders });
+            if (!dr.ok) throw new Error(await dr.text());
+            return json({ status: "cleared" });
+          }
         }
       }
       // ----- "what does this step mean?" for beginner cooks -----
@@ -1255,6 +1265,13 @@ Deno.serve(async (req) => {
         if (card.ingredients.length < 3 && (row.ingredients ?? []).length >= 3 && !(card.sub_recipes ?? []).length) {
           card.ingredients = row.ingredients;
         }
+        // restored subs missed the in-buildCard generation pass — run it for them here
+        await Promise.all((card.sub_recipes ?? []).map(async (sr: SubRecipe) => {
+          if (sr.ingredients.length >= 3 && sr.steps.length < 2) {
+            const gen = await generateSteps(sr.title || card.title, sr.ingredients, meta.caption, sr.steps).catch(() => null);
+            if (gen && gen.length) { sr.steps = gen; sr.ai_steps = true; }
+          }
+        }));
         const newEmpty = card.ingredients.length < 3 && !card.steps.length && !(card.sub_recipes ?? []).length;
         const oldHad = (row.ingredients ?? []).length >= 3 || (row.steps ?? []).length > 0 || (row.sub_recipes ?? []).length > 0;
         if (newEmpty && oldHad) {

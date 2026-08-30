@@ -523,11 +523,21 @@ export const PAGE_HTML = String.raw`<!DOCTYPE html>
       var sh = el("div", "sechead");
       sh.appendChild(el("h3", null, "Ingredients"));
       var addAll = el("button", "addall", "🛒 Add all to list");
+      var allIds = null;
       addAll.onclick = function () {
-        addAll.disabled = true; addAll.textContent = "Adding…";
-        addToGrocery(items, { id: r.id, title: listTitle }).then(function (ok) {
-          addAll.textContent = ok ? "✓ Added" : "🛒 Add all to list";
-          if (!ok) addAll.disabled = false;
+        addAll.disabled = true;
+        if (allIds) {
+          removeFromGrocery(allIds).then(function (ok) {
+            addAll.disabled = false;
+            if (ok) { allIds = null; addAll.textContent = "🛒 Add all to list"; }
+          });
+          return;
+        }
+        addAll.textContent = "Adding…";
+        addToGrocery(items, { id: r.id, title: listTitle }).then(function (ids) {
+          addAll.disabled = false;
+          allIds = ids;
+          addAll.textContent = ids ? "✓ Added (tap to undo)" : "🛒 Add all to list";
         });
       };
       sh.appendChild(addAll);
@@ -539,11 +549,20 @@ export const PAGE_HTML = String.raw`<!DOCTYPE html>
         cb.onchange = function () { row.classList.toggle("done", cb.checked); };
         var cart = el("button", "cartbtn", "+");
         cart.title = "Add to grocery list";
+        var myIds = null;
         cart.onclick = function () {
           cart.disabled = true;
-          addToGrocery([it], { id: r.id, title: listTitle }).then(function (ok) {
-            cart.textContent = ok ? "✓" : "+";
-            if (!ok) cart.disabled = false;
+          if (myIds) {
+            removeFromGrocery(myIds).then(function (ok) {
+              cart.disabled = false;
+              if (ok) { myIds = null; cart.textContent = "+"; }
+            });
+            return;
+          }
+          addToGrocery([it], { id: r.id, title: listTitle }).then(function (ids) {
+            cart.disabled = false;
+            myIds = ids;
+            cart.textContent = ids ? "✓" : "+";
           });
         };
         row.appendChild(cb); row.appendChild(lb); row.appendChild(cart);
@@ -786,11 +805,19 @@ export const PAGE_HTML = String.raw`<!DOCTYPE html>
     });
     return api("grocery", { method: "POST", body: JSON.stringify({ items: items }) }).then(function (res) {
       if (res && res.status === "added") {
-        toast(texts.length === 1 ? "Added to grocery list" : "Added " + texts.length + " items to grocery list");
+        toast(texts.length === 1 ? "Added to grocery list — tap again to undo" : "Added " + texts.length + " items — tap again to undo");
         loadGrocery();
-        return true;
+        return (res.items || []).map(function (x) { return x.id; });
       }
-      toast((res && res.message) || "Could not add"); return false;
+      toast((res && res.message) || "Could not add"); return null;
+    }).catch(function () { toast("Network error"); return null; });
+  }
+
+  function removeFromGrocery(ids) {
+    return api("grocery?ids=" + ids.join(","), { method: "DELETE" }).then(function () {
+      toast("Removed from grocery list");
+      loadGrocery();
+      return true;
     }).catch(function () { toast("Network error"); return false; });
   }
 
