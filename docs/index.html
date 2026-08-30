@@ -28,7 +28,7 @@
   html, body { margin: 0; padding: 0; background: var(--bg); color: var(--text);
     font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", Roboto, sans-serif;
     overscroll-behavior-y: none; }
-  body { padding-bottom: calc(24px + env(safe-area-inset-bottom)); }
+  body { padding-bottom: calc(88px + env(safe-area-inset-bottom)); }
 
   header { position: sticky; top: 0; z-index: 20; background: color-mix(in srgb, var(--bg) 82%, transparent);
     -webkit-backdrop-filter: blur(14px); backdrop-filter: blur(14px);
@@ -136,6 +136,41 @@
     font-weight: 600; opacity: 0; transition: all .25s; z-index: 100; max-width: 86vw; text-align: center; pointer-events: none; }
   .toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
 
+  .tabbar { position: fixed; left: 0; right: 0; bottom: 0; z-index: 40; display: flex; gap: 6px;
+    background: color-mix(in srgb, var(--bg) 88%, transparent);
+    -webkit-backdrop-filter: blur(14px); backdrop-filter: blur(14px);
+    border-top: 1px solid var(--line);
+    padding: 8px 14px calc(8px + env(safe-area-inset-bottom)); }
+  .tab { flex: 1; border: none; background: none; color: var(--muted); font-size: 14.5px; font-weight: 700;
+    padding: 10px; border-radius: 12px; }
+  .tab.active { color: var(--accent); background: var(--accent-soft); }
+  .badge { background: var(--accent); color: #fff; border-radius: 999px; font-size: 11px; font-weight: 700;
+    padding: 1px 6px; margin-left: 3px; display: none; }
+  .badge.show { display: inline-block; }
+
+  .gwrap { padding: 14px 16px; max-width: 720px; margin: 0 auto; }
+  .gactions { display: flex; justify-content: flex-end; margin-bottom: 8px; }
+  .gclear { border: 1px solid var(--line); background: var(--card); color: var(--muted); border-radius: 999px;
+    padding: 7px 13px; font-size: 13px; font-weight: 600; }
+  .grow { display: flex; align-items: flex-start; gap: 12px; padding: 12px 4px; border-bottom: 1px solid var(--line); }
+  .grow:last-child { border-bottom: none; }
+  .gcheck { width: 22px; height: 22px; border-radius: 8px; border: 2px solid var(--muted); flex: 0 0 22px;
+    margin-top: 2px; display: flex; align-items: center; justify-content: center; color: #fff; font-size: 14px; }
+  .grow.done .gcheck { background: var(--accent); border-color: var(--accent); }
+  .gname { font-size: 15.5px; font-weight: 700; text-transform: capitalize; }
+  .grow.done .gname { text-decoration: line-through; color: var(--muted); }
+  .gsub { color: var(--muted); font-size: 12.5px; margin-top: 2px; line-height: 1.45; }
+  .gempty { text-align: center; color: var(--muted); padding: 50px 30px; font-size: 14px; line-height: 1.5; }
+  .gempty .big { font-size: 48px; }
+
+  .sechead { display: flex; align-items: center; justify-content: space-between; margin: 0 0 10px; }
+  .sechead h3 { margin: 0; }
+  .addall { border: 1px solid var(--line); background: var(--card); color: var(--accent); border-radius: 999px;
+    padding: 6px 12px; font-size: 12.5px; font-weight: 700; }
+  .cartbtn { border: 1px solid var(--line); background: var(--card); color: var(--accent); border-radius: 9px;
+    width: 30px; height: 30px; font-size: 15px; font-weight: 700; flex: 0 0 30px; margin-top: -2px; }
+  .cartbtn:disabled { color: var(--muted); }
+
   .hint { margin: 10px 16px 0; background: var(--accent-soft); border-radius: 14px; padding: 12px 14px;
     font-size: 13.5px; line-height: 1.45; display: none; }
   .hint.show { display: block; }
@@ -172,6 +207,20 @@
   <p>Or tap <b>+</b> above and paste a link.</p>
 </div>
 
+<div id="groceryview" class="gwrap" style="display:none">
+  <div class="gactions"><button class="gclear" id="gclear">Clear checked</button></div>
+  <div id="glist"></div>
+  <div class="gempty" id="gempty" style="display:none">
+    <div class="big">🛒</div>
+    <p>Your grocery list is empty.<br>Open a recipe and tap <b>+</b> next to an ingredient,<br>or <b>Add all to list</b>.</p>
+  </div>
+</div>
+
+<nav class="tabbar">
+  <button class="tab active" id="tab-recipes">🍲 Recipes</button>
+  <button class="tab" id="tab-grocery">🛒 Grocery<span class="badge" id="gbadge"></span></button>
+</nav>
+
 <div class="overlay" id="detail"></div>
 
 <div class="sheet" id="addsheet">
@@ -201,7 +250,7 @@
   var KEY = params.get("key") || localStorage.getItem("simmer_key") || "";
   if (params.get("key")) localStorage.setItem("simmer_key", params.get("key"));
 
-  var state = { recipes: [], cat: "All", q: "" };
+  var state = { recipes: [], cat: "All", q: "", grocery: [], view: "recipes" };
   var $ = function (id) { return document.getElementById(id); };
 
   var API_BASE = "https://mfxaogzzegwkscamarre.supabase.co/functions/v1/simmer/api/";
@@ -258,7 +307,7 @@
   function renderGrid() {
     var grid = $("grid"); grid.innerHTML = "";
     var rows = visible();
-    $("empty").style.display = state.recipes.length ? "none" : "block";
+    $("empty").style.display = (state.view === "recipes" && !state.recipes.length) ? "block" : "none";
     $("count").textContent = state.recipes.length
       ? state.recipes.length + " recipe" + (state.recipes.length === 1 ? "" : "s") + " saved" : "your recipe library";
     rows.forEach(function (r) {
@@ -388,13 +437,33 @@
 
     if (ings.length) {
       var s1 = el("div", "section");
-      s1.appendChild(el("h3", null, "Ingredients"));
+      var sh = el("div", "sechead");
+      sh.appendChild(el("h3", null, "Ingredients"));
+      var addAll = el("button", "addall", "🛒 Add all to list");
+      addAll.onclick = function () {
+        addAll.disabled = true; addAll.textContent = "Adding…";
+        addToGrocery(ings, r).then(function (ok) {
+          addAll.textContent = ok ? "✓ Added" : "🛒 Add all to list";
+          if (!ok) addAll.disabled = false;
+        });
+      };
+      sh.appendChild(addAll);
+      s1.appendChild(sh);
       ings.forEach(function (it, i) {
         var row = el("div", "ing");
         var cb = document.createElement("input"); cb.type = "checkbox"; cb.id = "ing" + i;
         var lb = document.createElement("label"); lb.htmlFor = cb.id; lb.textContent = it; lb.style.flex = "1";
         cb.onchange = function () { row.classList.toggle("done", cb.checked); };
-        row.appendChild(cb); row.appendChild(lb);
+        var cart = el("button", "cartbtn", "+");
+        cart.title = "Add to grocery list";
+        cart.onclick = function () {
+          cart.disabled = true;
+          addToGrocery([it], r).then(function (ok) {
+            cart.textContent = ok ? "✓" : "+";
+            if (!ok) cart.disabled = false;
+          });
+        };
+        row.appendChild(cb); row.appendChild(lb); row.appendChild(cart);
         s1.appendChild(row);
       });
       c.appendChild(s1);
@@ -473,9 +542,92 @@
     Promise.resolve(load()).then(function () { b.classList.remove("spin"); toast("Up to date"); });
   };
   document.addEventListener("visibilitychange", function () {
-    if (!document.hidden && KEY) load();
+    if (!document.hidden && KEY) { load(); loadGrocery(); }
   });
-  window.addEventListener("pageshow", function (e) { if (e.persisted && KEY) load(); });
+  window.addEventListener("pageshow", function (e) { if (e.persisted && KEY) { load(); loadGrocery(); } });
+
+  // ---------- grocery list ----------
+  function loadGrocery() {
+    return api("grocery").then(function (rows) {
+      if (Array.isArray(rows)) { state.grocery = rows; renderGrocery(); }
+    }).catch(function () {});
+  }
+
+  function groceryGroups() {
+    var map = {}, order = [];
+    state.grocery.forEach(function (g) {
+      if (!map[g.item]) { map[g.item] = []; order.push(g.item); }
+      map[g.item].push(g);
+    });
+    return order.map(function (k) {
+      var rows = map[k];
+      return { name: k, rows: rows, done: rows.every(function (r) { return r.checked; }) };
+    });
+  }
+
+  function renderGrocery() {
+    var groups = groceryGroups();
+    var open = groups.filter(function (g) { return !g.done; });
+    var done = groups.filter(function (g) { return g.done; });
+    var list = $("glist"); list.innerHTML = "";
+    $("gempty").style.display = groups.length ? "none" : "block";
+    var badge = $("gbadge");
+    badge.textContent = String(open.length);
+    badge.classList.toggle("show", open.length > 0);
+    open.concat(done).forEach(function (g) {
+      var row = el("div", "grow" + (g.done ? " done" : ""));
+      var cb = el("div", "gcheck", g.done ? "✓" : "");
+      var body = el("div", null); body.style.flex = "1";
+      body.appendChild(el("div", "gname", g.name));
+      var subs = g.rows.map(function (r) {
+        return r.text + (r.recipe_title ? " — " + r.recipe_title : "");
+      });
+      body.appendChild(el("div", "gsub", subs.join(" · ")));
+      row.appendChild(cb); row.appendChild(body);
+      row.onclick = function () {
+        var ids = g.rows.map(function (r) { return r.id; });
+        var target = !g.done;
+        g.rows.forEach(function (r) { r.checked = target; });
+        renderGrocery();
+        api("grocery", { method: "PATCH", body: JSON.stringify({ ids: ids, checked: target }) }).catch(function () {});
+      };
+      list.appendChild(row);
+    });
+  }
+
+  function addToGrocery(texts, recipe) {
+    var items = texts.map(function (t) {
+      return { text: t, recipe_id: recipe.id, recipe_title: recipe.title };
+    });
+    return api("grocery", { method: "POST", body: JSON.stringify({ items: items }) }).then(function (res) {
+      if (res && res.status === "added") {
+        toast(texts.length === 1 ? "Added to grocery list" : "Added " + texts.length + " items to grocery list");
+        loadGrocery();
+        return true;
+      }
+      toast((res && res.message) || "Could not add"); return false;
+    }).catch(function () { toast("Network error"); return false; });
+  }
+
+  $("gclear").onclick = function () {
+    if (!state.grocery.some(function (g) { return g.checked; })) { toast("Nothing checked yet"); return; }
+    api("grocery?checked=true", { method: "DELETE" }).then(function () { loadGrocery(); toast("Cleared"); });
+  };
+
+  function setView(v) {
+    state.view = v;
+    var rec = v === "recipes";
+    $("tab-recipes").classList.toggle("active", rec);
+    $("tab-grocery").classList.toggle("active", !rec);
+    $("chips").style.display = rec ? "" : "none";
+    $("grid").style.display = rec ? "" : "none";
+    $("empty").style.display = rec && !state.recipes.length ? "block" : "none";
+    document.querySelector(".searchwrap").style.display = rec ? "" : "none";
+    $("groceryview").style.display = rec ? "none" : "";
+    if (!rec) loadGrocery();
+  }
+  $("tab-recipes").onclick = function () { setView("recipes"); };
+  $("tab-grocery").onclick = function () { setView("grocery"); };
 
   // ---------- install hint ----------
   var standalone = window.navigator.standalone === true || matchMedia("(display-mode: standalone)").matches;
@@ -498,7 +650,7 @@
   };
 
   if (!KEY) $("keysheet").classList.add("open");
-  else load();
+  else { load(); loadGrocery(); }
 })();
 </script>
 </body>

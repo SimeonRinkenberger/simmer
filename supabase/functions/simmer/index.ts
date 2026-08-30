@@ -230,6 +230,17 @@ function cleanTitle(s: string): string {
   return t.slice(0, 100);
 }
 
+// "2 cups flour, sifted" -> "flour": the key the grocery list combines on
+function normalizeItem(text: string): string {
+  let s = text.toLowerCase();
+  s = s.replace(/\(.*?\)/g, " ");            // "(28 ounce)"
+  s = s.split(/,| - | – |;/)[0];             // ", sliced"
+  const UNITS = "cups?|tbsps?|tablespoons?|tsps?|teaspoons?|grams?|g|kg|ml|l|liters?|oz|ounces?|lbs?|pounds?|cloves?|cans?|sticks?|slices?|pieces?|pinch(?:es)?|dash(?:es)?|handfuls?|scoops?|packages?|pkgs?|containers?|jars?|bottles?|bunch(?:es)?|heads?|stalks?|sprigs?|large|medium|small|extra[- ]large";
+  s = s.replace(new RegExp("^(?:(?:about|approx\\.?|roughly|heaping|scant)\\s+)?[\\d\\s/.,-]*\\s*(?:" + UNITS + ")?\\s*(?:of\\s+)?", "i"), "");
+  s = s.replace(/[\d/]+/g, " ").replace(/\bto taste\b/g, "").replace(/\s{2,}/g, " ").trim();
+  return s || text.toLowerCase().trim();
+}
+
 function catFor(text: string): string | null {
   const t = text.toLowerCase();
   const rules: Array<[string, RegExp]> = [
@@ -461,12 +472,106 @@ async function findRecipeOnline(
   }
 }
 
+// Plan B when Gemini's grounded search is quota-limited: search DuckDuckGo ourselves,
+// fetch the top results, and read the schema.org Recipe JSON-LD that recipe blogs embed.
+async function ddgSearch(query: string): Promise<string[]> {
+  try {
+    const r = await fetch("https://html.duckduckgo.com/html/?q=" + encodeURIComponent(query), {
+      headers: { "User-Agent": DESKTOP_UA, "Accept-Language": "en-US" },
+      signal: AbortSignal.timeout(10000),
+    });
+    if (!r.ok) return [];
+    const html = await r.text();
+    const urls: string[] = [];
+    const re = /class="result__a"[^>]+href="([^"]+)"/g;
+    let m: RegExpExecArray | null;
+    while ((m = re.exec(html)) && urls.length < 8) {
+      let href = decodeEntities(m[1]);
+      const uddg = href.match(/[?&]uddg=([^&]+)/);
+      if (uddg) href = decodeURIComponent(uddg[1]);
+      if (!/^https?:\/\//.test(href)) continue;
+      if (/instagram\.com|tiktok\.com|youtube\.com|youtu\.be|facebook\.com|pinterest\.|reddit\.com|amazon\./i.test(href)) continue;
+      urls.push(href);
+    }
+    return urls;
+  } catch (e) {
+    console.error("ddg search failed", e);
+    return [];
+  }
+}
+
+function parseLdRecipe(html: string): { name?: string; ingredients: string[]; steps: string[]; cuisine?: string } | null {
+  const blocks = [...html.matchAll(/<script[^>]+application\/ld\+json[^>]*>([\s\S]*?)<\/script>/gi)];
+  for (const b of blocks) {
+    let data: unknown;
+    try { data = JSON.parse(b[1].trim()); } catch { continue; }
+    const queue: any[] = Array.isArray(data) ? [...data] : [data];
+    while (queue.length) {
+      const node = queue.shift();
+      if (!node || typeof node !== "object") continue;
+      if (Array.isArray(node["@graph"])) queue.push(...node["@graph"]);
+      const t = node["@type"];
+      if (!(t === "Recipe" || (Array.isArray(t) && t.includes("Recipe")))) continue;
+      const ingredients = (node.recipeIngredient ?? node.ingredients ?? [])
+        .map((x: unknown) => decodeEntities(String(x)).replace(/\s+/g, " ").trim()).filter(Boolean);
+      const steps: string[] = [];
+      const walk = (ins: any) => {
+        if (!ins) return;
+        if (typeof ins === "string") { const s = decodeEntities(ins).replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim(); if (s) steps.push(s); return; }
+        if (Array.isArray(ins)) { ins.forEach(walk); return; }
+        if (ins.itemListElement) { walk(ins.itemListElement); return; }
+        if (ins.text) { const s = decodeEntities(String(ins.text)).replace(/\s+/g, " ").trim(); if (s) steps.push(s); }
+      };
+      walk(node.recipeInstructions);
+      if (ingredients.length >= 3) {
+        return {
+          name: node.name ? decodeEntities(String(node.name)) : undefined,
+          ingredients,
+          steps,
+          cuisine: Array.isArray(node.recipeCuisine) ? String(node.recipeCuisine[0]) : (node.recipeCuisine ? String(node.recipeCuisine) : undefined),
+        };
+      }
+    }
+  }
+  return null;
+}
+
+async function findRecipeViaSearch(
+  title: string, caption: string | null, author: string | null,
+): Promise<(Card & { source_url: string | null }) | null> {
+  const siteHint = caption?.match(/([a-z0-9-]+\.(?:com|net|org|co|blog|recipes?))\b/i)?.[1] ?? "";
+  const query = `${title} recipe ${author ?? ""} ${siteHint}`.replace(/\s+/g, " ").trim();
+  const urls = await ddgSearch(query);
+  for (const u of urls.slice(0, 5)) {
+    try {
+      const r = await fetch(u, { headers: { "User-Agent": DESKTOP_UA }, signal: AbortSignal.timeout(10000) });
+      if (!r.ok) continue;
+      const rec = parseLdRecipe(await r.text());
+      if (rec) {
+        const t = cleanTitle(rec.name ?? title) || title;
+        return {
+          title: t,
+          category: catFor(t) ?? catFor(title) ?? "Other",
+          cuisine: rec.cuisine ?? cuisineFor(t),
+          ingredients: rec.ingredients.slice(0, 60),
+          steps: rec.steps.slice(0, 40),
+          tags: [],
+          has_full_recipe: rec.ingredients.length >= 3 && rec.steps.length >= 2,
+          source_url: u,
+        };
+      }
+    } catch { /* try next result */ }
+  }
+  return null;
+}
+
 async function buildCard(meta: Meta, platform: string): Promise<{ card: Card; sourceUrl: string | null }> {
   const card = await extractCard(meta.caption, meta.author, platform);
   let sourceUrl: string | null = null;
   // Caption gave us (nearly) nothing — hunt the recipe down on the web.
   if (!card.has_full_recipe && card.ingredients.length < 3) {
-    const web = await findRecipeOnline(card.title, meta.caption, meta.author).catch(() => null);
+    const web = (await findRecipeOnline(card.title, meta.caption, meta.author).catch(() => null)) ??
+      (await findRecipeViaSearch(card.title, meta.caption, meta.author).catch(() => null));
     if (web && web.ingredients.length >= 3) {
       card.ingredients = web.ingredients;
       card.steps = web.steps;
@@ -653,6 +758,55 @@ Deno.serve(async (req) => {
       if (!authorized(req, url)) return json({ status: "error", message: "Bad or missing key." }, 401);
 
       if (req.method === "POST" && sub === "/api/ingest") return await handleIngest(req);
+
+      // ----- grocery list -----
+      const GREST = `${SUPABASE_URL}/rest/v1/grocery_items`;
+      if (sub === "/api/grocery") {
+        if (req.method === "GET") {
+          const r = await fetch(`${GREST}?select=*&order=created_at.asc`, { headers: dbHeaders });
+          if (!r.ok) throw new Error(await r.text());
+          return json(await r.json());
+        }
+        if (req.method === "POST") {
+          const body = await req.json().catch(() => ({}));
+          const items = Array.isArray(body.items) ? body.items : [];
+          const rows = items.slice(0, 100).map((it: Record<string, unknown>) => ({
+            text: String(it.text ?? "").slice(0, 200),
+            item: normalizeItem(String(it.text ?? "")),
+            recipe_id: typeof it.recipe_id === "string" && /^[0-9a-f-]{36}$/.test(it.recipe_id) ? it.recipe_id : null,
+            recipe_title: it.recipe_title ? String(it.recipe_title).slice(0, 120) : null,
+          })).filter((r: { text: string }) => r.text);
+          if (!rows.length) return json({ status: "error", message: "No items." });
+          const ir = await fetch(GREST, {
+            method: "POST",
+            headers: { ...dbHeaders, prefer: "return=representation" },
+            body: JSON.stringify(rows),
+          });
+          if (!ir.ok) throw new Error(await ir.text());
+          return json({ status: "added", items: await ir.json() });
+        }
+        if (req.method === "PATCH") {
+          const body = await req.json().catch(() => ({}));
+          const ids = (Array.isArray(body.ids) ? body.ids : []).filter((x: string) => /^[0-9a-f-]{36}$/.test(x));
+          if (!ids.length) return json({ status: "error", message: "No ids." });
+          const pr = await fetch(`${GREST}?id=in.(${ids.join(",")})`, {
+            method: "PATCH", headers: dbHeaders, body: JSON.stringify({ checked: !!body.checked }),
+          });
+          if (!pr.ok) throw new Error(await pr.text());
+          return json({ status: "ok" });
+        }
+        if (req.method === "DELETE" && url.searchParams.get("checked") === "true") {
+          const dr = await fetch(`${GREST}?checked=eq.true`, { method: "DELETE", headers: dbHeaders });
+          if (!dr.ok) throw new Error(await dr.text());
+          return json({ status: "cleared" });
+        }
+      }
+      const gidMatch = sub.match(/^\/api\/grocery\/([0-9a-f-]{36})$/);
+      if (gidMatch && req.method === "DELETE") {
+        const dr = await fetch(`${GREST}?id=eq.${gidMatch[1]}`, { method: "DELETE", headers: dbHeaders });
+        if (!dr.ok) throw new Error(await dr.text());
+        return json({ status: "deleted" });
+      }
 
       if (req.method === "GET" && sub === "/api/recipes") {
         const rows = await dbSelect("select=*&order=created_at.desc&limit=500");
