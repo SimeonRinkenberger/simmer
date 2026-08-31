@@ -186,6 +186,9 @@
   .videowrap iframe { width: 100%; height: 100%; border: 0; display: block; }
   .webimgwrap { border-radius: 22px; overflow: hidden; box-shadow: var(--sh-lg); max-height: 46vh; }
   .webimgwrap img { width: 100%; max-height: 46vh; object-fit: cover; display: block; }
+  /* a scan is the source of truth — show the whole card, never crop it */
+  .webimgwrap.photowrap { max-height: 64vh; background: var(--sand); }
+  .webimgwrap.photowrap img { max-height: 64vh; object-fit: contain; }
   .dtitlerow { display: flex; align-items: flex-start; gap: 10px; margin-top: 22px; }
   .dtitle { font-family: var(--serif); font-size: 30px; font-weight: 700; letter-spacing: -.028em;
     line-height: 1.1; margin: 0; flex: 1; font-variation-settings: "opsz" 110, "wght" 700; }
@@ -330,6 +333,15 @@
     box-shadow: 0 4px 16px var(--glow); transition: transform var(--t-1) var(--e-out), box-shadow var(--t-2); }
   .primary:active { transform: scale(.985); }
   .primary:disabled { opacity: .55; box-shadow: none; }
+  .secondary { width: 100%; border: 1px solid var(--line-2); border-radius: 16px; padding: 15px;
+    background: var(--card); color: var(--ink); font-size: 15px; font-weight: 700;
+    transition: transform var(--t-1) var(--e-out), border-color var(--t-2), color var(--t-2); }
+  .secondary:active { transform: scale(.985); border-color: var(--ember); color: var(--ember-ink); }
+  .secondary:disabled { opacity: .55; }
+  .orline { display: flex; align-items: center; gap: 12px; margin: 20px 0 15px; color: var(--muted);
+    font-size: 10px; font-weight: 700; letter-spacing: .18em; text-transform: uppercase; }
+  .orline::before, .orline::after { content: ""; flex: 1; height: 1px; background: var(--line-2); }
+  .sheetbody p.scanhint { margin: 11px 0 0; text-align: center; font-size: 12px; }
 
   /* ---------- toast ---------- */
   .toast { position: fixed; left: 50%; bottom: calc(96px + env(safe-area-inset-bottom));
@@ -592,6 +604,10 @@
     <p>Paste any link — Instagram, TikTok, YouTube, Pinterest, or a recipe website.</p>
     <input class="urlinput" id="urlinput" type="url" placeholder="https://…" autocapitalize="off" autocorrect="off">
     <button class="primary" id="savebtn">Save recipe</button>
+    <div class="orline"><span>or</span></div>
+    <button class="secondary" id="scanbtn">📷 Scan a photo of a recipe</button>
+    <p class="scanhint">A recipe card, a cookbook page, or your own handwriting.</p>
+    <input type="file" id="scaninput" accept="image/*" hidden>
   </div>
 </div>
 
@@ -1129,10 +1145,10 @@
 
     var c = el("div", "dcontent");
 
-    if (r.platform === "web") {
-      // saved web pages have no video — show the cached page image instead
+    if (r.platform === "web" || r.platform === "photo") {
+      // no video to embed — show the cached page image, or the scan itself
       if (r.thumb_url) {
-        var ww = el("div", "webimgwrap");
+        var ww = el("div", "webimgwrap" + (r.platform === "photo" ? " photowrap" : ""));
         var wimg = document.createElement("img");
         wimg.src = r.thumb_url; wimg.alt = "";
         wimg.onerror = function () { ww.remove(); };
@@ -1191,6 +1207,7 @@
     link.textContent = (r.platform === "tiktok" ? "Open in TikTok ↗"
       : r.platform === "youtube" ? "Open on YouTube ↗"
       : r.platform === "web" ? "Open original ↗"
+      : r.platform === "photo" ? "View the photo ↗"
       : "Open in Instagram ↗");
     mr.appendChild(link);
     c.appendChild(mr);
@@ -1365,7 +1382,9 @@
     } else {
       var nb = el("div", "section");
       nb.appendChild(el("div", "norecipe",
-        r.platform === "web"
+        r.platform === "photo"
+          ? "Couldn't read a recipe from this photo — tap ↻ up top to try again, or scan a straighter, better-lit shot."
+        : r.platform === "web"
           ? "No written recipe found on that page — tap ↻ up top to try again, or tap Open original to view the page."
           : "No written recipe in this video's caption — watch the video above, tap ↻ up top to search again, or open it on " +
             (r.platform === "tiktok" ? "TikTok" : r.platform === "youtube" ? "YouTube" : "Instagram") + " for details."));
@@ -1594,6 +1613,66 @@
         $("urlinput").value = ""; $("addsheet").classList.remove("open"); load();
       }
     }).catch(function () { b.disabled = false; b.textContent = "Save recipe"; toast("Network error"); });
+  };
+
+  // ---------- scan a photo of a recipe ----------
+  var SCAN_LABEL = "📷 Scan a photo of a recipe";
+
+  // Phone photos are 4-12MB; Gemini caps at 4MB and the edge function has to carry it
+  // as base64, so shrink to something a recipe card is still legible at.
+  function downscale(file, maxDim, quality, cb) {
+    var reader = new FileReader();
+    reader.onload = function () {
+      var img = new Image();
+      img.onload = function () {
+        var w = img.naturalWidth || img.width, h = img.naturalHeight || img.height;
+        if (!w || !h) { cb(null); return; }
+        var scale = Math.min(1, maxDim / Math.max(w, h));
+        var cw = Math.max(1, Math.round(w * scale)), ch = Math.max(1, Math.round(h * scale));
+        var cv = document.createElement("canvas");
+        cv.width = cw; cv.height = ch;
+        var ctx = cv.getContext("2d");
+        if (!ctx) { cb(null); return; }
+        ctx.drawImage(img, 0, 0, cw, ch);
+        try { cb(cv.toDataURL("image/jpeg", quality)); } catch (e) { cb(null); }
+      };
+      img.onerror = function () { cb(null); };
+      img.src = reader.result;
+    };
+    reader.onerror = function () { cb(null); };
+    reader.readAsDataURL(file);
+  }
+
+  function scanDone(msg) {
+    var b = $("scanbtn");
+    b.disabled = false; b.textContent = SCAN_LABEL;
+    if (msg) toast(msg);
+  }
+
+  $("scanbtn").onclick = function () { $("scaninput").click(); };
+  $("scaninput").onchange = function () {
+    var input = $("scaninput");
+    var f = input.files && input.files[0];
+    input.value = "";  // so picking the same photo twice still fires a change
+    if (!f) return;
+    var b = $("scanbtn");
+    b.disabled = true; b.textContent = "Opening the photo…";
+    downscale(f, 1600, 0.82, function (dataUrl) {
+      if (!dataUrl) { scanDone("Couldn't open that photo"); return; }
+      b.textContent = "Reading the recipe… (10–20s)";
+      api("ingest-photo", { method: "POST", body: JSON.stringify({ image: dataUrl }) }).then(function (res) {
+        scanDone((res && res.message) || "Done");
+        if (res && (res.status === "saved" || res.status === "exists")) {
+          $("addsheet").classList.remove("open");
+          // open what was read straight away, so a bad scan is obvious immediately
+          load().then(function () {
+            for (var i = 0; i < state.recipes.length; i++) {
+              if (state.recipes[i].id === res.id) { openDetail(state.recipes[i]); return; }
+            }
+          });
+        }
+      }).catch(function () { scanDone("Network error"); });
+    });
   };
 
   // ---------- search ----------

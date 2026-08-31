@@ -4,6 +4,7 @@
 //   GET  /icon.png            app icon
 //   GET  /manifest.webmanifest
 //   POST /api/ingest          { url } — called by the iOS Shortcut
+//   POST /api/ingest-photo    { image } — data URL of a photographed recipe
 //   GET  /api/recipes         list all
 //   PATCH /api/recipes/:id    edit fields (title, category, favorite, ...)
 //   DELETE /api/recipes/:id
@@ -66,8 +67,8 @@ function metaTag(html: string, prop: string): string | null {
 // ---------- URL parsing ----------
 
 type Parsed = {
-  platform: "instagram" | "tiktok" | "youtube" | "web";
-  shortcode: string;   // unique key (tiktok ids prefixed tt-, youtube yt-, generic pages web-<hash>)
+  platform: "instagram" | "tiktok" | "youtube" | "web" | "photo";
+  shortcode: string;   // unique key (tiktok ids prefixed tt-, youtube yt-, generic pages web-<hash>, scans photo-<hash>)
   kind: string;        // reel | p | tv | video | page
   clean: string;       // canonical link
 };
@@ -445,6 +446,11 @@ function fetchMeta(p: Parsed): Promise<Meta | PageMeta> {
   if (p.platform === "instagram") return igMeta(p);
   if (p.platform === "tiktok") return ttMeta(p);
   if (p.platform === "youtube") return ytMeta(p);
+  // A scanned photo is its own source — the stored image is the only thing to read,
+  // so hand it straight back and let buildCard's image path re-read it on reprocess.
+  if (p.platform === "photo") {
+    return Promise.resolve({ caption: null, thumb: p.clean, author: null, images: [p.clean] });
+  }
   return webMeta(p);
 }
 
@@ -1086,22 +1092,22 @@ function b64encode(buf: ArrayBuffer): string {
   return btoa(bin);
 }
 
-async function extractFromImage(imgUrl: string, title: string): Promise<Card | null> {
-  if (!GEMINI_API_KEY || !imgUrl) return null;
-  const ir = await fetch(imgUrl, { headers: { "User-Agent": DESKTOP_UA }, signal: AbortSignal.timeout(10000) });
-  if (!ir.ok) return null;
-  const buf = await ir.arrayBuffer();
-  if (buf.byteLength < 1000 || buf.byteLength > 4_000_000) return null;
+// Reads a recipe out of already-decoded image bytes. Shared by the carousel-slide
+// path (which fetches the image first) and by scanned photos (which arrive as bytes).
+async function visionCard(dataB64: string, mime: string, title: string): Promise<Card | null> {
+  if (!GEMINI_API_KEY) return null;
   const prompt =
-    `If this image contains a written recipe (a recipe card, ingredient list, or instructions as text in the image), extract it. ` +
+    `If this image contains a written recipe (a recipe card, cookbook or magazine page, handwritten note, ` +
+    `ingredient list, or instructions as text in the image), extract it. ` +
     `Reply with ONLY a JSON object: {"title": short dish name in Title Case, "category": one of ${JSON.stringify(CATEGORIES)}, ` +
     `"cuisine": string or null, "ingredients": string[] with quantities, "steps": string[], "tags": string[] (max 5), "has_full_recipe": boolean}. ` +
+    `Transcribe the text as written, including handwriting, and keep the ingredient order from the image. ` +
     `If the image does NOT contain a written recipe (it's just food, a person, or a video frame), reply with exactly {"none": true}. Never invent text that is not readable in the image.`;
   const text = await geminiGenerate({
     contents: [{
       role: "user",
       parts: [
-        { inline_data: { mime_type: ir.headers.get("content-type") ?? "image/jpeg", data: b64encode(buf) } },
+        { inline_data: { mime_type: mime, data: dataB64 } },
         { text: prompt },
       ],
     }],
@@ -1118,6 +1124,15 @@ async function extractFromImage(imgUrl: string, title: string): Promise<Card | n
   } catch {
     return null;
   }
+}
+
+async function extractFromImage(imgUrl: string, title: string): Promise<Card | null> {
+  if (!GEMINI_API_KEY || !imgUrl) return null;
+  const ir = await fetch(imgUrl, { headers: { "User-Agent": DESKTOP_UA }, signal: AbortSignal.timeout(10000) });
+  if (!ir.ok) return null;
+  const buf = await ir.arrayBuffer();
+  if (buf.byteLength < 1000 || buf.byteLength > 4_000_000) return null;
+  return await visionCard(b64encode(buf), ir.headers.get("content-type") ?? "image/jpeg", title);
 }
 
 // Last resort when no method exists anywhere: draft sensible steps from the
@@ -1327,6 +1342,22 @@ async function storeThumb(shortcode: string, src: string | null): Promise<string
   }
 }
 
+// Same upload as storeThumb, but for bytes we already hold (a scanned photo).
+async function storeThumbBytes(shortcode: string, bytes: Uint8Array, mime: string): Promise<string | null> {
+  try {
+    const up = await fetch(`${SUPABASE_URL}/storage/v1/object/thumbs/${shortcode}.jpg`, {
+      method: "POST",
+      headers: { ...authHeaders, "content-type": mime, "x-upsert": "true" },
+      body: bytes,
+    });
+    if (!up.ok) { console.error("photo upload", up.status, await up.text()); return null; }
+    return `${SUPABASE_URL}/storage/v1/object/public/thumbs/${shortcode}.jpg`;
+  } catch (e) {
+    console.error("storeThumbBytes failed", e);
+    return null;
+  }
+}
+
 // Legacy service keys are JWTs and want a Bearer header; new sb_secret_ keys
 // are not JWTs and must be sent as `apikey` only (storage rejects them as Bearer).
 const KEY_IS_JWT = SERVICE_KEY.split(".").length === 3;
@@ -1417,6 +1448,90 @@ async function handleIngest(req: Request): Promise<Response> {
   });
 }
 
+// Scan a photo of a recipe (a card, a cookbook page, a handwritten note) and save it.
+// Vision runs BEFORE the upload so a photo with no readable recipe never leaves a
+// stray file in storage.
+async function handleIngestPhoto(req: Request): Promise<Response> {
+  const body = await req.json().catch(() => ({}));
+  const raw = String((body as { image?: unknown }).image ?? "");
+  if (!raw) return json({ status: "error", message: "No photo received." });
+
+  const m = raw.match(/^data:([^;,]+);base64,(.*)$/s);
+  const b64 = (m ? m[2] : raw).replace(/\s/g, "");
+  const mime = m ? m[1] : "image/jpeg";
+  if (!/^image\//.test(mime)) return json({ status: "error", message: "That file is not an image." });
+
+  let bytes: Uint8Array;
+  try {
+    const bin = atob(b64);
+    bytes = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+  } catch {
+    return json({ status: "error", message: "That photo could not be read." });
+  }
+  if (bytes.byteLength < 1000) return json({ status: "error", message: "That photo is too small to read." });
+  if (bytes.byteLength > 4_000_000) return json({ status: "error", message: "That photo is too large — try taking it again." });
+
+  if (!GEMINI_API_KEY) {
+    return json({ status: "error", message: "Photo scanning needs the AI key — reading photos is not available right now." });
+  }
+
+  // identical photos map to the same row, the way identical links do
+  const digest = await crypto.subtle.digest("SHA-1", bytes);
+  const hex = [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("");
+  const shortcode = `photo-${hex.slice(0, 16)}`;
+
+  const existing = await dbSelect(`shortcode=eq.${encodeURIComponent(shortcode)}&select=id,title,category`);
+  if (existing.length > 0) {
+    return json({
+      status: "exists", id: existing[0].id, title: existing[0].title, category: existing[0].category,
+      message: `Already saved: ${existing[0].title}`,
+    });
+  }
+
+  const seen = await visionCard(b64, mime, "Scanned recipe").catch(() => null);
+  if (!seen) {
+    return json({
+      status: "error",
+      message: "Couldn't read a recipe in that photo — try a straight-on shot with the whole recipe in frame.",
+    });
+  }
+
+  const stored = await storeThumbBytes(shortcode, bytes, mime);
+  if (!stored) return json({ status: "error", message: "Could not save that photo — try again." });
+
+  // reuse the normal pipeline so a scan still gets AI steps when the card has none,
+  // plus nutrition and timing, exactly like a saved link
+  const meta: Meta = { caption: null, thumb: stored, author: null, images: [stored] };
+  const { card, nutrition, timeMinutes } = await buildCard(meta, "photo", "p", seen);
+
+  const row = await dbInsert({
+    url: stored,
+    shortcode,
+    platform: "photo",
+    kind: "p",
+    author: null,
+    title: card.title,
+    caption: null,
+    thumb_url: stored,
+    category: card.category,
+    cuisine: card.cuisine,
+    ingredients: card.ingredients,
+    steps: card.steps,
+    tags: card.tags,
+    has_full_recipe: card.has_full_recipe,
+    source_url: null,
+    sub_recipes: card.sub_recipes ?? [],
+    nutrition,
+    time_minutes: timeMinutes,
+  });
+
+  return json({
+    status: "saved", id: row.id, title: row.title, category: row.category,
+    message: `Saved: ${row.title} → ${row.category}`,
+  });
+}
+
 Deno.serve(async (req) => {
   const url = new URL(req.url);
   let sub = url.pathname;
@@ -1458,6 +1573,7 @@ Deno.serve(async (req) => {
       if (!authorized(req, url)) return json({ status: "error", message: "Bad or missing key." }, 401);
 
       if (req.method === "POST" && sub === "/api/ingest") return await handleIngest(req);
+      if (req.method === "POST" && sub === "/api/ingest-photo") return await handleIngestPhoto(req);
 
       // ----- grocery list -----
       const GREST = `${SUPABASE_URL}/rest/v1/grocery_items`;
