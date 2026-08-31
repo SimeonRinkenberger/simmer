@@ -772,6 +772,50 @@
     });
   }
 
+  // ---------- share ----------
+  function shareText(r) {
+    var lines = [];
+    lines.push("🍲 " + (r.title || "Recipe"));
+    if (r.author) lines.push("by " + String(r.author).replace(/^@/, ""));
+    lines.push("");
+    if (r.url) lines.push("📎 " + r.url);
+    if (r.source_url && r.source_url !== r.url) lines.push("📖 Recipe: " + r.source_url);
+    function section(title, ings, steps, ai) {
+      if (title) { lines.push(""); lines.push("— " + title + " —"); }
+      if (ings && ings.length) {
+        lines.push(""); lines.push("INGREDIENTS");
+        ings.forEach(function (t) { lines.push("• " + t); });
+      }
+      if (steps && steps.length) {
+        lines.push(""); lines.push(ai ? "STEPS (AI-suggested — double-check against the video)" : "STEPS");
+        steps.forEach(function (t, i) { lines.push((i + 1) + ". " + t); });
+      }
+    }
+    var subs = Array.isArray(r.sub_recipes) ? r.sub_recipes : [];
+    if (subs.length) {
+      subs.forEach(function (sr) { section(sr.title, sr.ingredients, sr.steps, !!sr.ai_steps); });
+    } else {
+      section(null, r.ingredients, r.steps, (r.tags || []).indexOf("ai-steps") >= 0);
+    }
+    lines.push("");
+    lines.push("Shared from Simmer 🍲");
+    return lines.join("\n");
+  }
+
+  function shareRecipe(r) {
+    var text = shareText(r);
+    if (navigator.share) {
+      navigator.share({ title: r.title || "Recipe", text: text }).catch(function () {});
+    } else if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(
+        function () { toast("Recipe copied — paste it anywhere"); },
+        function () { toast("Couldn't copy the recipe"); }
+      );
+    } else {
+      toast("Sharing isn't supported in this browser");
+    }
+  }
+
   // ---------- detail ----------
   function embedSrc(r) {
     if (r.platform === "tiktok") return "https://www.tiktok.com/embed/v2/" + String(r.shortcode).replace(/^tt-/, "");
@@ -795,6 +839,9 @@
         else toast((res && res.message) || "Could not update");
       }).catch(function () { re.classList.remove("spin"); toast("Network error"); });
     };
+    var shbtn = el("button", "iconbtn", "📤");
+    shbtn.title = "Share this recipe";
+    shbtn.onclick = function () { shareRecipe(r); };
     var fav = el("button", "iconbtn", r.favorite ? "★" : "☆");
     fav.style.color = r.favorite ? "#E7A33B" : "";
     fav.onclick = function () {
@@ -807,7 +854,7 @@
       if (!confirm("Delete “" + (r.title || "this recipe") + "”?")) return;
       api("recipes/" + r.id, { method: "DELETE" }).then(function () { closeDetail(); toast("Deleted"); load(); });
     };
-    actions.appendChild(re); actions.appendChild(fav); actions.appendChild(del);
+    actions.appendChild(re); actions.appendChild(shbtn); actions.appendChild(fav); actions.appendChild(del);
     top.appendChild(back); top.appendChild(actions);
     ov.appendChild(top);
 
