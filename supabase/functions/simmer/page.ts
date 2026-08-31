@@ -1073,17 +1073,34 @@ export const PAGE_HTML = String.raw`<!DOCTYPE html>
     if (hasAnyIngs) {
       var srow = el("div", "scalerow");
       srow.appendChild(el("span", "scalelbl", "Scale recipe"));
+      var customChip;
+      function activate(chip) {
+        var kids = srow.querySelectorAll(".scalechip");
+        for (var ki = 0; ki < kids.length; ki++) kids[ki].classList.remove("active");
+        chip.classList.add("active");
+        scaleables.forEach(function (fn) { fn(); });
+      }
       [[0.5, "½×"], [1, "1×"], [2, "2×"], [3, "3×"]].forEach(function (opt) {
         var sb = el("button", "scalechip" + (opt[0] === 1 ? " active" : ""), opt[1]);
         sb.onclick = function () {
           scaleF = opt[0];
-          var kids = srow.querySelectorAll(".scalechip");
-          for (var ki = 0; ki < kids.length; ki++) kids[ki].classList.remove("active");
-          sb.classList.add("active");
-          scaleables.forEach(function (fn) { fn(); });
+          customChip.textContent = "Custom";
+          activate(sb);
         };
         srow.appendChild(sb);
       });
+      customChip = el("button", "scalechip", "Custom");
+      customChip.onclick = function () {
+        var v = prompt("Scale by how much? For example 1.5 for one-and-a-half batches, or 5 to feed a crowd.",
+          customChip.textContent === "Custom" ? "" : String(scaleF));
+        if (v === null) return;
+        v = parseFloat(String(v).replace(",", ".").replace(/[x×\s]/g, ""));
+        if (!isFinite(v) || v <= 0 || v > 25) { toast("Enter a number between 0 and 25, like 1.5"); return; }
+        scaleF = v;
+        customChip.textContent = (formatQty(v) || String(v)) + "×";
+        activate(customChip);
+      };
+      srow.appendChild(customChip);
       c.appendChild(srow);
     }
 
