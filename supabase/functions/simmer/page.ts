@@ -59,7 +59,7 @@ export const PAGE_HTML = String.raw`<!DOCTYPE html>
       --sh-md: 0 2px 6px rgba(0,0,0,.42), 0 10px 24px rgba(0,0,0,.36);
       --sh-lg: 0 4px 12px rgba(0,0,0,.5), 0 20px 46px rgba(0,0,0,.44);
       --sh-up: 0 -8px 40px rgba(0,0,0,.55);
-      --grain: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='140' height='140'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.8' numOctaves='2' stitchTiles='stitch'/%3E%3CfeColorMatrix type='saturate' values='0'/%3E%3C/filter%3E%3Crect width='140' height='140' filter='url(%23n)' opacity='.16'/%3E%3C/svg%3E");
+      --grain: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='140' height='140'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.8' numOctaves='2' stitchTiles='stitch'/%3E%3CfeColorMatrix type='saturate' values='0'/%3E%3C/filter%3E%3Crect width='140' height='140' filter='url(%23n)' opacity='.10'/%3E%3C/svg%3E");
     }
   }
   * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
@@ -116,7 +116,7 @@ export const PAGE_HTML = String.raw`<!DOCTYPE html>
   @media (min-width: 640px) { .grid { grid-template-columns: repeat(3, 1fr); } }
   @media (min-width: 980px) { .grid { grid-template-columns: repeat(4, 1fr); } }
   .carditem { background: none; border: none; display: flex; flex-direction: column; cursor: pointer;
-    transition: transform var(--t-2) var(--e-out); }
+    min-width: 0; transition: transform var(--t-2) var(--e-out); }
   .carditem:active { transform: scale(.968); }
   @keyframes cardin { from { opacity: 0; transform: translateY(14px); } }
   .thumbwrap { position: relative; aspect-ratio: 4 / 5; border-radius: 18px; overflow: hidden;
@@ -125,21 +125,24 @@ export const PAGE_HTML = String.raw`<!DOCTYPE html>
     opacity: 0; transform: scale(1.05);
     transition: opacity 400ms var(--e-soft), transform 700ms var(--e-out); }
   .thumbwrap.loaded img { opacity: 1; transform: none; }
+  /* Finite sweep on purpose: lazy images far below the fold stay pending indefinitely,
+     and an infinite animation per card would keep the compositor busy the whole session. */
   .thumbwrap.loading::after { content: ""; position: absolute; inset: 0; pointer-events: none;
     background: linear-gradient(100deg, transparent 25%, rgba(255,255,255,.38) 50%, transparent 75%);
-    transform: translateX(-100%); animation: shimmer 1.4s var(--e-soft) infinite; }
+    transform: translateX(-100%); animation: shimmer 1.4s var(--e-soft) 3; }
   @keyframes shimmer { to { transform: translateX(100%); } }
   .thumbwrap .noimg { position: absolute; inset: 0; display: flex; align-items: center;
     justify-content: center; font-size: 40px; opacity: .5; }
   .thumbwrap::before { content: ""; position: absolute; inset: 0; pointer-events: none; z-index: 1;
-    box-shadow: inset 0 0 0 1px rgba(36,27,21,.07); border-radius: inherit; }
+    box-shadow: inset 0 0 0 1px var(--line); border-radius: inherit; }
   .fav { position: absolute; top: 9px; right: 9px; z-index: 2; width: 27px; height: 27px;
     display: flex; align-items: center; justify-content: center; font-size: 13px; line-height: 1;
     background: rgba(26,16,10,.42); border-radius: 999px; color: #FFD9A0; }
-  .cardbody { padding: 11px 3px 0; }
-  .cardkick { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; margin-bottom: 5px; }
+  .cardbody { padding: 11px 3px 0; min-width: 0; }
+  .cardkick { display: flex; align-items: baseline; justify-content: space-between; gap: 8px;
+    margin-bottom: 5px; min-width: 0; }
   .catpill { font-size: 9.5px; font-weight: 700; letter-spacing: .14em; text-transform: uppercase;
-    color: var(--ember-ink); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    color: var(--ember-ink); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
   .ratepill { font-size: 10.5px; font-weight: 700; color: var(--honey); white-space: nowrap;
     flex: 0 0 auto; letter-spacing: .02em; }
   .cardtitle { font-family: var(--serif); font-size: 15.5px; font-weight: 600; line-height: 1.24;
