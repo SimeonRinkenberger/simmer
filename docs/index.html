@@ -216,6 +216,39 @@
   .hint.show { display: block; }
   .hint b { color: var(--accent); }
   .hint .x { float: right; border: none; background: none; color: var(--muted); font-size: 15px; }
+
+  .cookbtn { border: none; background: var(--accent); color: #fff; border-radius: 999px;
+    padding: 7px 14px; font-size: 12.5px; font-weight: 800; letter-spacing: .3px; }
+  #cook { position: fixed; inset: 0; z-index: 70; background: var(--bg); display: none; flex-direction: column; }
+  #cook.open { display: flex; animation: fadein .22s ease; }
+  @keyframes fadein { from { opacity: 0; } }
+  .cooktop { display: flex; align-items: center; justify-content: space-between; gap: 10px;
+    padding: calc(12px + env(safe-area-inset-top)) 14px 6px; }
+  .cookcount { font-size: 12.5px; font-weight: 800; letter-spacing: 1.6px; color: var(--muted);
+    text-transform: uppercase; text-align: center; flex: 1; }
+  .cookdots { display: flex; gap: 5px; justify-content: center; flex-wrap: wrap; padding: 4px 20px 0; }
+  .cookdot { width: 7px; height: 7px; border-radius: 999px; background: var(--line);
+    transition: background-color .25s, transform .25s; }
+  .cookdot.on { background: var(--accent); }
+  .cookdot.now { transform: scale(1.35); }
+  .cookstep { flex: 1; display: flex; align-items: center; justify-content: center;
+    padding: 12px 28px 24px; overflow-y: auto; cursor: pointer; }
+  .cooktxt { font-family: var(--serif); font-size: 26px; line-height: 1.5; font-weight: 600;
+    max-width: 640px; animation: stepin .28s cubic-bezier(.22,.9,.3,1) both; }
+  @keyframes stepin { from { opacity: 0; transform: translateY(10px); } }
+  .cookdone { text-align: center; }
+  .cookdone .big { font-size: 64px; margin-bottom: 10px; animation: bounceonce .5s cubic-bezier(.22,.9,.3,1); }
+  @keyframes bounceonce { 0% { transform: scale(.6); opacity: 0; } 60% { transform: scale(1.12); } 100% { transform: scale(1); opacity: 1; } }
+  .cookbottom { display: flex; gap: 10px; padding: 0 16px calc(16px + env(safe-area-inset-bottom)); }
+  .cooknavbtn { flex: 1; border: 1px solid var(--line); background: var(--card); color: var(--text);
+    border-radius: 14px; padding: 13px; font-size: 22px; line-height: 1; box-shadow: var(--shadow); transition: transform .15s; }
+  .cooknavbtn:active { transform: scale(.95); }
+  .cooknavbtn.next { background: var(--accent); border-color: var(--accent); color: #fff; }
+  #cooksheet { z-index: 80; }
+
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after { animation-duration: .01ms !important; transition-duration: .01ms !important; }
+  }
 </style>
 </head>
 <body>
@@ -279,6 +312,27 @@
     <h2>What does this mean?</h2>
     <div class="expstep" id="expstep"></div>
     <div class="expbody" id="expbody"></div>
+  </div>
+</div>
+
+<div id="cook">
+  <div class="cooktop">
+    <button class="iconbtn" id="cookx" aria-label="Exit cook mode">✕</button>
+    <div class="cookcount" id="cookcount"></div>
+    <button class="iconbtn" id="cookpeek" aria-label="Show ingredients">🧺</button>
+  </div>
+  <div class="cookdots" id="cookdots"></div>
+  <div class="cookstep" id="cookstep"></div>
+  <div class="cookbottom">
+    <button class="cooknavbtn" id="cookprev" aria-label="Previous step">‹</button>
+    <button class="cooknavbtn next" id="cooknext" aria-label="Next step">›</button>
+  </div>
+</div>
+
+<div class="sheet" id="cooksheet">
+  <div class="sheetbody">
+    <h2>Ingredients</h2>
+    <div id="cookings" style="max-height:52vh;overflow-y:auto"></div>
   </div>
 </div>
 
@@ -587,9 +641,14 @@
       });
       return s1;
     }
-    function stepSection(items, aiFlag) {
+    function stepSection(items, aiFlag, cookTitle, cookIngs) {
       var s2 = el("div", "section");
-      s2.appendChild(el("h3", null, "Steps"));
+      var sh2 = el("div", "sechead");
+      sh2.appendChild(el("h3", null, "Steps"));
+      var cbtn = el("button", "cookbtn", "▶ Cook");
+      cbtn.onclick = function () { openCookMode(cookTitle, items, cookIngs); };
+      sh2.appendChild(cbtn);
+      s2.appendChild(sh2);
       if (aiFlag) {
         var note = el("div", "norecipe", "✨ AI-suggested steps — the post only listed ingredients, so double-check against the video.");
         note.style.marginBottom = "12px";
@@ -619,11 +678,11 @@
         var si = Array.isArray(sr.ingredients) ? sr.ingredients : [];
         var ss = Array.isArray(sr.steps) ? sr.steps : [];
         if (si.length) c.appendChild(ingSection(si, sr.title || r.title));
-        if (ss.length) c.appendChild(stepSection(ss, !!sr.ai_steps));
+        if (ss.length) c.appendChild(stepSection(ss, !!sr.ai_steps, sr.title || r.title, si));
       });
     } else if (ings.length || steps.length) {
       if (ings.length) c.appendChild(ingSection(ings, r.title));
-      if (steps.length) c.appendChild(stepSection(steps, (r.tags || []).indexOf("ai-steps") >= 0));
+      if (steps.length) c.appendChild(stepSection(steps, (r.tags || []).indexOf("ai-steps") >= 0, r.title, ings));
     } else {
       var nb = el("div", "section");
       nb.appendChild(el("div", "norecipe",
@@ -694,8 +753,109 @@
     if (history.state && history.state.detail) history.back();
   }
   window.addEventListener("popstate", function () {
+    if ($("cook").classList.contains("open")) { closeCookMode(true); return; }
     var ov = $("detail");
     if (ov.classList.contains("open")) { ov.classList.remove("open"); ov.innerHTML = ""; document.body.style.overflow = ""; }
+  });
+
+  // ---------- cook mode ----------
+  var cook = { steps: [], ings: [], i: 0, title: "" };
+  var cookWake = null;
+  var cookAte = 0;
+  function cookWakeAcquire() {
+    try {
+      if (navigator.wakeLock && navigator.wakeLock.request) {
+        navigator.wakeLock.request("screen").then(function (wl) { cookWake = wl; }).catch(function () {});
+      }
+    } catch (e) { /* unsupported — screen may sleep, that's fine */ }
+  }
+  function cookWakeRelease() {
+    try { if (cookWake) { cookWake.release().catch(function () {}); cookWake = null; } } catch (e) {}
+  }
+  function renderCook() {
+    var n = cook.steps.length;
+    var done = cook.i >= n;
+    $("cookcount").textContent = done ? cook.title : "Step " + (cook.i + 1) + " of " + n;
+    var dots = $("cookdots"); dots.innerHTML = "";
+    for (var d = 0; d < n; d++) {
+      dots.appendChild(el("div", "cookdot" + (done || d < cook.i ? " on" : "") + (d === cook.i ? " on now" : "")));
+    }
+    var box = $("cookstep"); box.innerHTML = "";
+    if (done) {
+      var dn = el("div", "cooktxt cookdone");
+      dn.appendChild(el("div", "big", "🍽️"));
+      dn.appendChild(el("div", null, "That's everything — enjoy!"));
+      var fin = el("button", "primary", "Finish cooking");
+      fin.style.marginTop = "22px";
+      fin.onclick = function (ev) { ev.stopPropagation(); closeCookMode(false); };
+      dn.appendChild(fin);
+      box.appendChild(dn);
+    } else {
+      box.appendChild(el("div", "cooktxt", cook.steps[cook.i]));
+    }
+    $("cooknext").style.visibility = done ? "hidden" : "";
+    $("cookprev").style.visibility = cook.i === 0 ? "hidden" : "";
+  }
+  function cookGo(delta) {
+    var ni = cook.i + delta;
+    if (ni < 0 || ni > cook.steps.length) return;
+    cook.i = ni;
+    renderCook();
+  }
+  function openCookMode(title, steps, ings) {
+    cook = { steps: steps, ings: ings || [], i: 0, title: title || "" };
+    $("cook").classList.add("open");
+    renderCook();
+    cookWakeAcquire();
+    history.pushState({ cook: 1 }, "");
+  }
+  function closeCookMode(fromPop) {
+    $("cook").classList.remove("open");
+    $("cooksheet").classList.remove("open");
+    cookWakeRelease();
+    if (!fromPop && history.state && history.state.cook) history.back();
+  }
+  $("cookx").onclick = function () { closeCookMode(false); };
+  $("cookprev").onclick = function () { cookGo(-1); };
+  $("cooknext").onclick = function () { cookGo(1); };
+  $("cookstep").addEventListener("click", function (e) {
+    if (cook.i >= cook.steps.length) return;
+    if (Date.now() - cookAte < 400) return;
+    cookGo((e.clientX || 0) > window.innerWidth / 2 ? 1 : -1);
+  });
+  var cookTX = null, cookTY = 0;
+  $("cook").addEventListener("touchstart", function (e) {
+    cookTX = e.touches.length === 1 ? e.touches[0].clientX : null;
+    cookTY = e.touches.length === 1 ? e.touches[0].clientY : 0;
+  }, { passive: true });
+  $("cook").addEventListener("touchend", function (e) {
+    if (cookTX === null || !e.changedTouches.length) return;
+    var dx = e.changedTouches[0].clientX - cookTX;
+    var dy = e.changedTouches[0].clientY - cookTY;
+    cookTX = null;
+    if (Math.abs(dx) > 48 && Math.abs(dx) > Math.abs(dy) * 1.5) {
+      cookAte = Date.now();
+      cookGo(dx < 0 ? 1 : -1);
+    }
+  }, { passive: true });
+  $("cookpeek").onclick = function () {
+    var box = $("cookings"); box.innerHTML = "";
+    if (!cook.ings.length) {
+      box.appendChild(el("p", null, "No ingredient list for this recipe."));
+    }
+    cook.ings.forEach(function (it) {
+      var row = el("div", "ing");
+      var lb = el("label", null, it); lb.style.flex = "1";
+      row.appendChild(lb);
+      box.appendChild(row);
+    });
+    $("cooksheet").classList.add("open");
+  };
+  $("cooksheet").addEventListener("click", function (e) {
+    if (e.target === $("cooksheet")) $("cooksheet").classList.remove("open");
+  });
+  document.addEventListener("visibilitychange", function () {
+    if (!document.hidden && $("cook").classList.contains("open")) cookWakeAcquire();
   });
 
   // ---------- add by link ----------
