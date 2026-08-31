@@ -260,16 +260,16 @@ export const PAGE_HTML = String.raw`<!DOCTYPE html>
     display: inline-flex; align-items: center; justify-content: center;
     transition: transform var(--t-1) var(--e-out), background-color var(--t-2), color var(--t-2); }
   .cartbtn:not(.convbtn) { background: var(--ember-soft); color: var(--ember-ink); font-size: 17px; }
-  .cartbtn.convbtn { background: transparent; color: var(--muted); font-size: 13px; }
+  .cartbtn.convbtn { background: transparent; color: var(--ink-2); font-size: 16px; opacity: .6; }
   .cartbtn:disabled { opacity: .45; }
 
   .steps { padding-left: 0; margin: 0; counter-reset: st; list-style: none; }
   .steps li { counter-increment: st; display: flex; gap: 14px; padding: 13px 0; font-size: 15px;
     line-height: 1.62; border-bottom: 1px solid var(--line); align-items: flex-start; }
   .steps li:last-child { border-bottom: none; padding-bottom: 0; }
-  .steps li::before { content: counter(st); flex: 0 0 auto; min-width: 20px;
-    font-family: var(--serif); font-size: 21px; font-weight: 600; font-style: italic;
-    color: var(--ember); line-height: 1.2; letter-spacing: -.02em; }
+  .steps li::before { content: counter(st); flex: 0 0 auto; min-width: 24px;
+    font-family: var(--serif); font-size: 24px; font-weight: 600; font-style: italic;
+    color: var(--ember); line-height: 1.05; letter-spacing: -.02em; }
   .steps li .steptext { flex: 1; }
   .whybtn { flex: 0 0 24px; width: 24px; height: 24px; border-radius: 999px; border: none;
     background: var(--sand); color: var(--muted); font-size: 12px; font-weight: 800;
@@ -314,6 +314,7 @@ export const PAGE_HTML = String.raw`<!DOCTYPE html>
   .sheet.open { opacity: 1; pointer-events: auto; }
   .sheetbody { background-color: var(--paper); background-image: var(--grain);
     border-radius: 30px 30px 0 0; width: 100%; max-height: 90vh; overflow-y: auto;
+    border-top: 1px solid var(--line-2);
     padding: 12px 20px calc(26px + env(safe-area-inset-bottom));
     transform: translateY(100%); transition: transform var(--t-4) var(--e-spring); box-shadow: var(--sh-up); }
   .sheet.open .sheetbody { transform: none; }
@@ -397,7 +398,9 @@ export const PAGE_HTML = String.raw`<!DOCTYPE html>
     white-space: nowrap; letter-spacing: 0; }
   .grow.done .gname { text-decoration: line-through; }
   .grow.done .gtotal { color: var(--muted); background: var(--sand); }
-  .gsub { color: var(--muted); font-size: 12px; margin-top: 4px; line-height: 1.5; }
+  .gsub { color: var(--muted); font-size: 12px; margin-top: 4px; line-height: 1.5;
+    display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+  .gaisleico { font-family: var(--sans); font-size: 15px; line-height: 1; }
   @keyframes checkpop { 0% { transform: scale(1); } 45% { transform: scale(1.28); } 100% { transform: scale(1); } }
 
   /* ---------- install hint ---------- */
@@ -408,6 +411,8 @@ export const PAGE_HTML = String.raw`<!DOCTYPE html>
   .hint .x { float: right; border: none; background: none; color: var(--muted); font-size: 14px; padding: 0 0 0 8px; }
 
   /* ---------- convert + substitute ---------- */
+  /* Colour emoji fight the warm palette; these two are the only strongly blue ones. */
+  .emojibtn { filter: grayscale(1); opacity: .85; }
   .convbtn { font-size: 13px; }
   .convrow { display: flex; align-items: baseline; gap: 12px; padding: 13px 2px;
     border-bottom: 1px solid var(--line); }
@@ -435,8 +440,8 @@ export const PAGE_HTML = String.raw`<!DOCTYPE html>
   .planday.today .plandayname::after { content: " · today"; }
   .planslot { display: flex; align-items: center; gap: 10px; padding: 7px 0; }
   .planslot + .planslot { border-top: 1px solid var(--line); }
-  .slotlbl { flex: 0 0 62px; font-size: 10px; color: var(--muted); font-weight: 700;
-    letter-spacing: .1em; text-transform: uppercase; }
+  .slotlbl { flex: 0 0 74px; font-size: 9.5px; color: var(--muted); font-weight: 700;
+    letter-spacing: .08em; text-transform: uppercase; }
   .slotadd { flex: 1; text-align: left; border: 1px dashed var(--line-2); background: none;
     color: var(--muted); border-radius: 12px; padding: 9px 12px; font-size: 12.5px; font-weight: 600;
     transition: transform var(--t-1) var(--e-out), border-color var(--t-2), color var(--t-2); }
@@ -501,6 +506,7 @@ export const PAGE_HTML = String.raw`<!DOCTYPE html>
     box-shadow: 0 4px 18px var(--glow); }
   .cooknavbtn.ask { flex: 0 0 66px; background: var(--sand); border-color: transparent;
     color: var(--ink-2); font-weight: 800; font-size: 18px; }
+  .cooknavbtn.off { opacity: .3; pointer-events: none; box-shadow: none; }
   #cooksheet { z-index: 80; }
   #cooksheet .ing { border-bottom: 1px solid var(--line); }
 
@@ -690,6 +696,7 @@ export const PAGE_HTML = String.raw`<!DOCTYPE html>
     node.style.animation = "none";
     void node.offsetWidth;
     node.style.animation = "cardin .38s cubic-bezier(.22,.9,.3,1) both";
+    node.addEventListener("animationend", function () { node.style.animation = ""; }, { once: true });
   }
 
   // ---------- list ----------
@@ -756,13 +763,21 @@ export const PAGE_HTML = String.raw`<!DOCTYPE html>
       $("count").textContent = "recipes you've made";
       return;
     }
-    $("count").textContent = state.recipes.length
-      ? state.recipes.length + " recipe" + (state.recipes.length === 1 ? "" : "s") + " saved" : "your recipe library";
+    $("count").textContent = state.view === "made"
+      ? rows.length + " you have made"
+      : state.recipes.length
+        ? state.recipes.length + " recipe" + (state.recipes.length === 1 ? "" : "s") + " saved"
+        : "your recipe library";
     rows.forEach(function (r, idx) {
       var card = el("div", "carditem");
       if (state.animateNext) {
         card.style.animation = "cardin .42s cubic-bezier(.22,.9,.3,1) both";
         card.style.animationDelay = Math.min(idx * 34, 340) + "ms";
+        // "both" keeps the animation alive for the element's whole life; drop it once
+        // it has played so the cards go back to being plain, unanimated nodes.
+        card.addEventListener("animationend", function () {
+          card.style.animation = ""; card.style.animationDelay = "";
+        }, { once: true });
       }
       var tw = el("div", "thumbwrap");
       if (r.thumb_url) {
@@ -1097,7 +1112,7 @@ export const PAGE_HTML = String.raw`<!DOCTYPE html>
         else toast((res && res.message) || "Could not update");
       }).catch(function () { re.classList.remove("spin"); toast("Network error"); });
     };
-    var shbtn = el("button", "iconbtn", "📤");
+    var shbtn = el("button", "iconbtn emojibtn", "📤");
     shbtn.title = "Share this recipe";
     shbtn.onclick = function () { shareRecipe(r); };
     var fav = el("button", "iconbtn", r.favorite ? "★" : "☆");
@@ -1238,7 +1253,7 @@ export const PAGE_HTML = String.raw`<!DOCTYPE html>
         setIngLabel(lb, it);
         scaleables.push(function () { setIngLabel(lb, scaleLine(it, scaleF)); });
         cb.onchange = function () { row.classList.toggle("done", cb.checked); };
-        var swap = el("button", "cartbtn convbtn", "🔄");
+        var swap = el("button", "cartbtn convbtn", "⟳");
         swap.title = "Don't have it? Find a substitute";
         swap.onclick = function () { openSubstitute(scaleLine(it, scaleF), r.title); };
         var conv = null;
@@ -1463,7 +1478,8 @@ export const PAGE_HTML = String.raw`<!DOCTYPE html>
     }
     $("cooknext").style.visibility = done ? "hidden" : "";
     $("cookask").style.visibility = done ? "hidden" : "";
-    $("cookprev").style.visibility = cook.i === 0 ? "hidden" : "";
+    // Dimmed rather than hidden: the row keeps its balance and the buttons never move.
+    $("cookprev").classList.toggle("off", cook.i === 0);
   }
   function cookGo(delta) {
     var ni = cook.i + delta;
@@ -1775,7 +1791,9 @@ export const PAGE_HTML = String.raw`<!DOCTYPE html>
       AISLE_ORDER.forEach(function (a) {
         var gs = byAisle[a];
         if (!gs || !gs.length) return;
-        var head = el("div", "gaisle", AISLE_EMOJI[a] + " " + a);
+        var head = el("div", "gaisle");
+        head.appendChild(el("span", "gaisleico", AISLE_EMOJI[a]));
+        head.appendChild(el("span", null, a));
         var openCount = gs.filter(function (g) { return !g.done; }).length;
         if (openCount) head.appendChild(el("span", "n", String(openCount)));
         list.appendChild(head);
