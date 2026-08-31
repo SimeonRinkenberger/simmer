@@ -217,6 +217,14 @@
   .hint b { color: var(--accent); }
   .hint .x { float: right; border: none; background: none; color: var(--muted); font-size: 15px; }
 
+  .scalerow { display: flex; align-items: center; gap: 8px; margin-top: 18px; flex-wrap: wrap; }
+  .scalelbl { font-size: 12.5px; text-transform: uppercase; letter-spacing: 1.6px; color: var(--blue); font-weight: 700; margin-right: 2px; }
+  .scalechip { border: 1px solid var(--line); background: var(--card); color: var(--text); border-radius: 999px;
+    padding: 6px 13px; font-size: 13.5px; font-weight: 700;
+    transition: background-color .2s, color .2s, border-color .2s, transform .15s; }
+  .scalechip:active { transform: scale(.92); }
+  .scalechip.active { background: var(--blue); border-color: var(--blue); color: #fff; }
+
   .cookbtn { border: none; background: var(--accent); color: #fff; border-radius: 999px;
     padding: 7px 14px; font-size: 12.5px; font-weight: 800; letter-spacing: .3px; }
   #cook { position: fixed; inset: 0; z-index: 70; background: var(--bg); display: none; flex-direction: column; }
@@ -482,6 +490,65 @@
     }).catch(function () {});
   }
 
+  // ---------- serving scaler (display-only; stored data never changes) ----------
+  var UNI_FRAC = { "¼": 0.25, "½": 0.5, "¾": 0.75, "⅓": 1 / 3, "⅔": 2 / 3,
+    "⅛": 0.125, "⅜": 0.375, "⅝": 0.625, "⅞": 0.875, "⅙": 1 / 6, "⅚": 5 / 6, "⅕": 0.2 };
+  var NUM_TOK = "(?:\\d+\\s+\\d+\\s*\\/\\s*\\d+|\\d+\\s*\\/\\s*\\d+|\\d*\\s*[¼½¾⅓⅔⅛⅜⅝⅞⅙⅚⅕]|\\d+(?:\\.\\d+)?)";
+  var SCALE_RE = new RegExp("^([\\s•*▢☐\\-–—]*)(" + NUM_TOK + ")(?:(\\s*[-–—]\\s*|\\s+to\\s+)(" + NUM_TOK + "))?");
+
+  function qtyToNum(s) {
+    s = s.trim();
+    var m = s.match(/^(\d+)\s+(\d+)\s*\/\s*(\d+)$/);
+    if (m) return +m[1] + (+m[2]) / (+m[3] || 1);
+    m = s.match(/^(\d+)\s*\/\s*(\d+)$/);
+    if (m) return (+m[1]) / (+m[2] || 1);
+    m = s.match(/^(\d*)\s*([¼½¾⅓⅔⅛⅜⅝⅞⅙⅚⅕])$/);
+    if (m) return (+m[1] || 0) + UNI_FRAC[m[2]];
+    if (/^\d+(\.\d+)?$/.test(s)) return +s;
+    return null;
+  }
+
+  function formatQty(n) {
+    if (!isFinite(n) || n < 0) return null;
+    var whole = Math.floor(n + 1e-9);
+    var rem = n - whole;
+    var fracs = [[0, ""], [0.125, "⅛"], [1 / 6, "⅙"], [0.2, "⅕"], [0.25, "¼"], [1 / 3, "⅓"],
+      [0.375, "⅜"], [0.5, "½"], [0.625, "⅝"], [2 / 3, "⅔"], [0.75, "¾"], [5 / 6, "⅚"], [0.875, "⅞"], [1, ""]];
+    var best = 0, bestD = 2;
+    for (var i = 0; i < fracs.length; i++) {
+      var d = Math.abs(rem - fracs[i][0]);
+      if (d < bestD) { bestD = d; best = i; }
+    }
+    if (bestD <= 0.04) {
+      if (fracs[best][0] === 1) return String(whole + 1);
+      if (!fracs[best][1]) return String(whole);
+      return (whole ? String(whole) : "") + fracs[best][1];
+    }
+    return String(Math.round(n * 100) / 100);
+  }
+
+  function scaleLine(text, f) {
+    if (f === 1 || !text) return text;
+    var m = String(text).match(SCALE_RE);
+    if (!m || !m[2]) return text;
+    var rest = String(text).slice(m[0].length);
+    // "2% milk", "2nd" — a leading number that isn't a quantity
+    if (/^\s*%/.test(rest) || /^(st|nd|rd|th)\b/i.test(rest)) return text;
+    var q1 = qtyToNum(m[2]);
+    if (q1 === null) return text;
+    var s1 = formatQty(q1 * f);
+    if (s1 === null) return text;
+    var out = m[1] + s1;
+    if (m[4]) {
+      var q2 = qtyToNum(m[4]);
+      if (q2 === null) return text;
+      var s2 = formatQty(q2 * f);
+      if (s2 === null) return text;
+      out += m[3] + s2;
+    }
+    return out + rest;
+  }
+
   // ---------- detail ----------
   function embedSrc(r) {
     if (r.platform === "tiktok") return "https://www.tiktok.com/embed/v2/" + String(r.shortcode).replace(/^tt-/, "");
@@ -588,6 +655,9 @@
     mr.appendChild(link);
     c.appendChild(mr);
 
+    var scaleF = 1;          // resets every time a recipe is opened
+    var scaleables = [];     // row updaters run when the scale changes
+
     var ingUid = 0;
     function ingSection(items, listTitle) {
       var s1 = el("div", "section");
@@ -605,7 +675,8 @@
           return;
         }
         addAll.textContent = "Adding…";
-        addToGrocery(items, { id: r.id, title: listTitle }).then(function (ids) {
+        var toAdd = items.map(function (t) { return scaleLine(t, scaleF); });
+        addToGrocery(toAdd, { id: r.id, title: listTitle }).then(function (ids) {
           addAll.disabled = false;
           allIds = ids;
           addAll.textContent = ids ? "✓ Added (tap to undo)" : "🛒 Add all to list";
@@ -617,6 +688,7 @@
         var row = el("div", "ing");
         var cb = document.createElement("input"); cb.type = "checkbox"; cb.id = "ing" + (ingUid++);
         var lb = document.createElement("label"); lb.htmlFor = cb.id; lb.textContent = it; lb.style.flex = "1";
+        scaleables.push(function () { lb.textContent = scaleLine(it, scaleF); });
         cb.onchange = function () { row.classList.toggle("done", cb.checked); };
         var cart = el("button", "cartbtn", "+");
         cart.title = "Add to grocery list";
@@ -630,7 +702,7 @@
             });
             return;
           }
-          addToGrocery([it], { id: r.id, title: listTitle }).then(function (ids) {
+          addToGrocery([scaleLine(it, scaleF)], { id: r.id, title: listTitle }).then(function (ids) {
             cart.disabled = false;
             myIds = ids;
             cart.textContent = ids ? "✓" : "+";
@@ -646,7 +718,9 @@
       var sh2 = el("div", "sechead");
       sh2.appendChild(el("h3", null, "Steps"));
       var cbtn = el("button", "cookbtn", "▶ Cook");
-      cbtn.onclick = function () { openCookMode(cookTitle, items, cookIngs); };
+      cbtn.onclick = function () {
+        openCookMode(cookTitle, items, (cookIngs || []).map(function (t) { return scaleLine(t, scaleF); }));
+      };
       sh2.appendChild(cbtn);
       s2.appendChild(sh2);
       if (aiFlag) {
@@ -671,6 +745,24 @@
     var ings = Array.isArray(r.ingredients) ? r.ingredients : [];
     var steps = Array.isArray(r.steps) ? r.steps : [];
     var subs = Array.isArray(r.sub_recipes) ? r.sub_recipes : [];
+
+    var hasAnyIngs = ings.length > 0 || subs.some(function (s) { return (s.ingredients || []).length > 0; });
+    if (hasAnyIngs) {
+      var srow = el("div", "scalerow");
+      srow.appendChild(el("span", "scalelbl", "Scale recipe"));
+      [[0.5, "½×"], [1, "1×"], [2, "2×"], [3, "3×"]].forEach(function (opt) {
+        var sb = el("button", "scalechip" + (opt[0] === 1 ? " active" : ""), opt[1]);
+        sb.onclick = function () {
+          scaleF = opt[0];
+          var kids = srow.querySelectorAll(".scalechip");
+          for (var ki = 0; ki < kids.length; ki++) kids[ki].classList.remove("active");
+          sb.classList.add("active");
+          scaleables.forEach(function (fn) { fn(); });
+        };
+        srow.appendChild(sb);
+      });
+      c.appendChild(srow);
+    }
 
     if (subs.length) {
       subs.forEach(function (sr, k) {
