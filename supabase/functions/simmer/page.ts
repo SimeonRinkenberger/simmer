@@ -240,12 +240,8 @@ export const PAGE_HTML = String.raw`<!DOCTYPE html>
   .convnote { margin-top: 12px; }
   .convai { color: var(--muted); font-size: 12.5px; margin: 10px 0 0; }
   #convbody > p { font-size: 15px; line-height: 1.55; margin: 8px 0 0; }
-  .subbtn { width: 100%; margin-top: 16px; border: 1.5px solid var(--accent); background: none;
-    color: var(--accent); border-radius: 12px; padding: 11px; font-size: 14px; font-weight: 700;
-    transition: transform .15s; }
-  .subbtn:active { transform: scale(.97); }
   .subtext { font-size: 14.5px; line-height: 1.55; white-space: pre-wrap; margin-top: 12px;
-    max-height: 34vh; overflow-y: auto; }
+    max-height: 44vh; overflow-y: auto; }
   #subbody .convai { margin-top: 8px; }
   #explainsheet { z-index: 85; }
 
@@ -437,7 +433,13 @@ export const PAGE_HTML = String.raw`<!DOCTYPE html>
     <div class="expstep" id="convtitle"></div>
     <div id="convbody"></div>
     <p class="convnote" id="convnote" style="display:none">Volume ↔ weight equivalents assume standard measuring cups and are approximate.</p>
-    <button class="subbtn" id="convsubbtn">🔄 Don't have it? Find a substitute</button>
+  </div>
+</div>
+
+<div class="sheet" id="subsheet">
+  <div class="sheetbody">
+    <h2>Out of it? Try this</h2>
+    <div class="expstep" id="subtitle"></div>
     <div id="subbody"></div>
   </div>
 </div>
@@ -738,6 +740,15 @@ export const PAGE_HTML = String.raw`<!DOCTYPE html>
     return rows.length ? rows : null;
   }
 
+  // ⇄ only appears on lines with a real measurement — "36 english muffins" has
+  // nothing sensible to convert, so don't offer (or spend an AI call on) it
+  function lineHasMeasure(text) {
+    var m = String(text).match(SCALE_RE);
+    if (!m || !m[2]) return false;
+    var rest = String(text).slice(m[0].length).replace(/^[\s.]+/, "");
+    return !!canonUnit(rest);
+  }
+
   var convCache = {};
   var subCache = {};
   var convCtx = { line: "", title: "" };
@@ -745,7 +756,6 @@ export const PAGE_HTML = String.raw`<!DOCTYPE html>
     convCtx = { line: line, title: recipeTitle || "" };
     $("convtitle").textContent = line;
     var box = $("convbody"); box.innerHTML = "";
-    $("subbody").innerHTML = "";
     $("convnote").style.display = "none";
     $("convsheet").classList.add("open");
     function showRows(rows) {
@@ -992,9 +1002,15 @@ export const PAGE_HTML = String.raw`<!DOCTYPE html>
         var lb = document.createElement("label"); lb.htmlFor = cb.id; lb.textContent = it; lb.style.flex = "1";
         scaleables.push(function () { lb.textContent = scaleLine(it, scaleF); });
         cb.onchange = function () { row.classList.toggle("done", cb.checked); };
-        var conv = el("button", "cartbtn convbtn", "⇄");
-        conv.title = "Show measurement equivalents";
-        conv.onclick = function () { openConvert(scaleLine(it, scaleF), r.title); };
+        var swap = el("button", "cartbtn convbtn", "🔄");
+        swap.title = "Don't have it? Find a substitute";
+        swap.onclick = function () { openSubstitute(scaleLine(it, scaleF), r.title); };
+        var conv = null;
+        if (lineHasMeasure(it)) {
+          conv = el("button", "cartbtn convbtn", "⇄");
+          conv.title = "Show measurement equivalents";
+          conv.onclick = function () { openConvert(scaleLine(it, scaleF), r.title); };
+        }
         var cart = el("button", "cartbtn", "+");
         cart.title = "Add to grocery list";
         var myIds = null;
@@ -1013,7 +1029,9 @@ export const PAGE_HTML = String.raw`<!DOCTYPE html>
             cart.textContent = ids ? "✓" : "+";
           });
         };
-        row.appendChild(cb); row.appendChild(lb); row.appendChild(conv); row.appendChild(cart);
+        row.appendChild(cb); row.appendChild(lb); row.appendChild(swap);
+        if (conv) row.appendChild(conv);
+        row.appendChild(cart);
         s1.appendChild(row);
       });
       return s1;
@@ -1258,10 +1276,13 @@ export const PAGE_HTML = String.raw`<!DOCTYPE html>
   $("convsheet").addEventListener("click", function (e) {
     if (e.target === $("convsheet")) $("convsheet").classList.remove("open");
   });
-  $("convsubbtn").onclick = function () {
-    var ctx = convCtx;
+  var subCtx = { line: "", title: "" };
+  function openSubstitute(line, recipeTitle) {
+    subCtx = { line: line, title: recipeTitle || "" };
+    $("subtitle").textContent = line;
     var box = $("subbody"); box.innerHTML = "";
-    var ck = ctx.title + "|" + ctx.line;
+    $("subsheet").classList.add("open");
+    var ck = subCtx.title + "|" + line;
     function show(t) {
       box.innerHTML = "";
       box.appendChild(el("div", "subtext", t));
@@ -1269,15 +1290,18 @@ export const PAGE_HTML = String.raw`<!DOCTYPE html>
     }
     if (subCache[ck]) { show(subCache[ck]); return; }
     box.appendChild(el("p", "subtext", "Asking the kitchen coach…"));
-    api("substitute", { method: "POST", body: JSON.stringify({ ingredient: ctx.line, title: ctx.title }) }).then(function (res) {
-      if (convCtx.line !== ctx.line) return;
+    api("substitute", { method: "POST", body: JSON.stringify({ ingredient: line, title: subCtx.title }) }).then(function (res) {
+      if (subCtx.line !== line) return;
       if (res && res.text) { subCache[ck] = res.text; show(res.text); }
       else { box.innerHTML = ""; box.appendChild(el("p", "subtext", (res && res.message) || "Couldn't get suggestions — try again.")); }
     }).catch(function () {
-      if (convCtx.line !== ctx.line) return;
+      if (subCtx.line !== line) return;
       box.innerHTML = ""; box.appendChild(el("p", "subtext", "Network error — try again."));
     });
-  };
+  }
+  $("subsheet").addEventListener("click", function (e) {
+    if (e.target === $("subsheet")) $("subsheet").classList.remove("open");
+  });
   document.addEventListener("visibilitychange", function () {
     if (!document.hidden && $("cook").classList.contains("open")) cookWakeAcquire();
   });
