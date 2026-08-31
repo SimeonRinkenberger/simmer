@@ -580,7 +580,8 @@ export const PAGE_HTML = String.raw`<!DOCTYPE html>
       card.appendChild(tw);
       var body = el("div", "cardbody");
       body.appendChild(el("div", "cardtitle", r.title || "Untitled"));
-      var meta = [r.cuisine, r.author ? "@" + String(r.author).replace(/^@/, "") : null]
+      var meta = [r.time_minutes ? fmtTime(r.time_minutes) : null, r.cuisine,
+        r.author ? "@" + String(r.author).replace(/^@/, "") : null]
         .filter(Boolean).join(" · ");
       if (meta) body.appendChild(el("div", "cardmeta", meta));
       card.appendChild(body);
@@ -803,6 +804,15 @@ export const PAGE_HTML = String.raw`<!DOCTYPE html>
     });
   }
 
+  function fmtTime(min) {
+    min = Math.round(min);
+    if (min >= 60) {
+      var h = Math.floor(min / 60), mm = min % 60;
+      return h + " hr" + (mm ? " " + mm + " min" : "");
+    }
+    return min + " min";
+  }
+
   // ---------- share ----------
   function shareText(r) {
     var lines = [];
@@ -938,6 +948,7 @@ export const PAGE_HTML = String.raw`<!DOCTYPE html>
         .then(function () { toast("Moved to " + r.category); load(); });
     };
     mr.appendChild(sel);
+    if (r.time_minutes) mr.appendChild(el("span", "mchip", "⏱ ~" + fmtTime(r.time_minutes)));
     if (r.cuisine) mr.appendChild(el("span", "mchip", r.cuisine));
     if (r.source_url && r.source_url !== r.url) {
       var src = document.createElement("a");
@@ -963,7 +974,8 @@ export const PAGE_HTML = String.raw`<!DOCTYPE html>
       if (nu.protein_g) nr.appendChild(el("span", "nutchip", nu.protein_g + "g protein"));
       if (nu.carbs_g) nr.appendChild(el("span", "nutchip", nu.carbs_g + "g carbs"));
       if (nu.fat_g) nr.appendChild(el("span", "nutchip", nu.fat_g + "g fat"));
-      nr.appendChild(el("span", "nutlabel", "per serving · ✨ AI estimate"));
+      nr.appendChild(el("span", "nutlabel",
+        "per serving" + (nu.servings > 1 ? " · makes ~" + nu.servings + " servings" : "") + " · ✨ AI estimate"));
       c.appendChild(nr);
     }
 

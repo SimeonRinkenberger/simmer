@@ -378,7 +378,7 @@ async function ytMeta(p: Parsed): Promise<Meta> {
 }
 
 // Generic pages carry their recipe as schema.org JSON-LD — when present we can skip AI entirely.
-type PageMeta = Meta & { ldCard: (Card & { source_url: string | null }) | null };
+type PageMeta = Meta & { ldCard: (Card & { source_url: string | null; time_minutes?: number | null }) | null };
 
 async function webMeta(p: Parsed): Promise<PageMeta> {
   const out: PageMeta = { caption: null, thumb: null, author: null, ldCard: null };
@@ -410,6 +410,7 @@ async function webMeta(p: Parsed): Promise<PageMeta> {
         tags: [],
         has_full_recipe: rec.ingredients.length >= 3 && rec.steps.length >= 2,
         source_url: p.clean,
+        time_minutes: rec.minutes ?? null,
       };
     } else if (recs.length > 1) {
       // several real recipes on one page (a meal-prep post) → one Meal Prep card
@@ -937,7 +938,16 @@ async function wpSiteSearch(host: string, title: string): Promise<string[]> {
   }
 }
 
-type LdRecipe = { name?: string; ingredients: string[]; steps: string[]; cuisine?: string };
+type LdRecipe = { name?: string; ingredients: string[]; steps: string[]; cuisine?: string; minutes?: number | null };
+
+// "PT1H30M" → 90
+function isoMinutes(v: unknown): number | null {
+  if (!v || typeof v !== "string") return null;
+  const m = v.match(/^P(?:(\d+)D)?T?(?:(\d+)H)?(?:(\d+)M)?/i);
+  if (!m) return null;
+  const min = (+(m[1] ?? 0)) * 1440 + (+(m[2] ?? 0)) * 60 + (+(m[3] ?? 0));
+  return min > 0 && min < 3000 ? min : null;
+}
 
 function parseLdRecipes(html: string): LdRecipe[] {
   const out: LdRecipe[] = [];
@@ -964,11 +974,14 @@ function parseLdRecipes(html: string): LdRecipe[] {
       };
       walk(node.recipeInstructions);
       if (ingredients.length >= 3) {
+        const prep = isoMinutes(node.prepTime) ?? 0;
+        const cook = isoMinutes(node.cookTime) ?? 0;
         out.push({
           name: node.name ? decodeEntities(String(node.name)) : undefined,
           ingredients,
           steps,
           cuisine: Array.isArray(node.recipeCuisine) ? String(node.recipeCuisine[0]) : (node.recipeCuisine ? String(node.recipeCuisine) : undefined),
+          minutes: isoMinutes(node.totalTime) ?? (prep + cook > 0 ? prep + cook : null),
         });
       }
     }
@@ -1132,13 +1145,16 @@ async function generateSteps(title: string, ingredients: string[], caption: stri
 // Best-effort only — a null result must never block or delay a save's data.
 type Nutrition = { calories: number; protein_g: number; carbs_g: number; fat_g: number; servings: number };
 
-async function estimateNutrition(title: string, ingredients: string[]): Promise<Nutrition | null> {
+async function estimateNutrition(
+  title: string, ingredients: string[],
+): Promise<{ nutrition: Nutrition; minutes: number | null } | null> {
   if (ingredients.length < 3) return null;
   try {
     const system =
-      `You estimate nutrition for home cooking. Given a dish name and its full ingredient list, estimate how many ` +
-      `servings it makes and the PER-SERVING nutrition. Reply with ONLY a JSON object: ` +
-      `{"calories": int, "protein_g": int, "carbs_g": int, "fat_g": int, "servings": int}. Round sensibly, no commentary.`;
+      `You estimate nutrition and timing for home cooking. Given a dish name and its full ingredient list, estimate ` +
+      `how many servings it makes, the PER-SERVING nutrition, and the realistic total minutes to prep and cook it. ` +
+      `Reply with ONLY a JSON object: ` +
+      `{"calories": int, "protein_g": int, "carbs_g": int, "fat_g": int, "servings": int, "total_minutes": int}. Round sensibly, no commentary.`;
     const user = `Dish: ${title}\nIngredients:\n${ingredients.slice(0, 60).join("\n")}`;
     const text = await textGenerate(system, user, true);
     if (!text) return null;
@@ -1147,12 +1163,16 @@ async function estimateNutrition(title: string, ingredients: string[]): Promise<
     const cal = num("calories");
     if (cal === null || cal <= 0 || cal > 5000) return null;
     const servings = num("servings");
+    const minutes = num("total_minutes");
     return {
-      calories: cal,
-      protein_g: num("protein_g") ?? 0,
-      carbs_g: num("carbs_g") ?? 0,
-      fat_g: num("fat_g") ?? 0,
-      servings: servings && servings > 0 ? servings : 1,
+      nutrition: {
+        calories: cal,
+        protein_g: num("protein_g") ?? 0,
+        carbs_g: num("carbs_g") ?? 0,
+        fat_g: num("fat_g") ?? 0,
+        servings: servings && servings > 0 ? servings : 1,
+      },
+      minutes: minutes && minutes > 0 && minutes < 3000 ? minutes : null,
     };
   } catch (e) {
     console.error("nutrition estimate failed", e);
@@ -1162,8 +1182,8 @@ async function estimateNutrition(title: string, ingredients: string[]): Promise<
 
 async function buildCard(
   meta: Meta, platform: string, kind = "reel",
-  preCard: (Card & { source_url?: string | null }) | null = null,
-): Promise<{ card: Card; sourceUrl: string | null; nutrition: Nutrition | null }> {
+  preCard: (Card & { source_url?: string | null; time_minutes?: number | null }) | null = null,
+): Promise<{ card: Card; sourceUrl: string | null; nutrition: Nutrition | null; timeMinutes: number | null }> {
   // a page that carried its own JSON-LD recipe skips extraction and the web hunt entirely
   const card = preCard ?? await extractCard(meta.caption, meta.author, platform);
   let sourceUrl: string | null = preCard ? (preCard.source_url ?? null) : null;
@@ -1244,12 +1264,17 @@ async function buildCard(
       if (gen && gen.length) { sr.steps = gen; sr.ai_steps = true; }
     }
   }));
-  // nutrition is single-recipe only (skip Meal Prep cards to keep scope sane)
+  // nutrition/time are single-recipe only (skip Meal Prep cards to keep scope sane)
   let nutrition: Nutrition | null = null;
+  let timeMinutes: number | null = preCard?.time_minutes ?? null;
   if (!(card.sub_recipes ?? []).length && card.ingredients.length >= 3) {
-    nutrition = await estimateNutrition(card.title, card.ingredients).catch(() => null);
+    const est = await estimateNutrition(card.title, card.ingredients).catch(() => null);
+    if (est) {
+      nutrition = est.nutrition;
+      if (timeMinutes === null) timeMinutes = est.minutes; // the page's own figure wins
+    }
   }
-  return { card, sourceUrl, nutrition };
+  return { card, sourceUrl, nutrition, timeMinutes };
 }
 
 async function extractCard(caption: string | null, author: string | null, platform: string): Promise<Card> {
@@ -1360,7 +1385,7 @@ async function handleIngest(req: Request): Promise<Response> {
   }
 
   const meta = await fetchMeta(parsed);
-  const { card, sourceUrl, nutrition } = await buildCard(
+  const { card, sourceUrl, nutrition, timeMinutes } = await buildCard(
     meta, parsed.platform, parsed.kind, (meta as PageMeta).ldCard ?? null,
   );
   const thumb = await storeThumb(parsed.shortcode, meta.thumb);
@@ -1383,6 +1408,7 @@ async function handleIngest(req: Request): Promise<Response> {
     source_url: sourceUrl ?? (parsed.platform === "web" ? parsed.clean : null),
     sub_recipes: card.sub_recipes ?? [],
     nutrition,
+    time_minutes: timeMinutes,
   });
 
   return json({
@@ -1641,6 +1667,34 @@ Deno.serve(async (req) => {
         return json(rows);
       }
 
+      // Fill in nutrition + time for an existing recipe from its STORED ingredients
+      // only — no scraping, no re-extraction, so nothing else can change.
+      const enMatch = sub.match(/^\/api\/recipes\/([0-9a-f-]{36})\/enrich$/);
+      if (enMatch && req.method === "POST") {
+        const rows = await dbSelect(`id=eq.${enMatch[1]}&select=*`);
+        if (!rows.length) return json({ status: "error", message: "Not found." }, 404);
+        const row = rows[0];
+        if (row.nutrition && row.time_minutes) {
+          return json({ status: "ok", nutrition: row.nutrition, time_minutes: row.time_minutes });
+        }
+        if ((row.sub_recipes ?? []).length > 0 || (row.ingredients ?? []).length < 3) {
+          return json({ status: "skipped", message: "No single-recipe ingredient list to estimate from." });
+        }
+        const est = await estimateNutrition(String(row.title ?? ""), (row.ingredients as unknown[]).map(String));
+        if (!est) return json({ status: "error", message: "Estimate unavailable right now — try again." });
+        const patch = {
+          nutrition: row.nutrition ?? est.nutrition,
+          time_minutes: row.time_minutes ?? est.minutes,
+        };
+        const pr = await fetch(`${REST}?id=eq.${row.id}`, {
+          method: "PATCH",
+          headers: { ...dbHeaders, prefer: "return=representation" },
+          body: JSON.stringify(patch),
+        });
+        if (!pr.ok) throw new Error(`db patch ${pr.status}: ${await pr.text()}`);
+        return json({ status: "enriched", ...patch });
+      }
+
       const reMatch = sub.match(/^\/api\/recipes\/([0-9a-f-]{36})\/reprocess$/);
       if (reMatch && req.method === "POST") {
         const rows = await dbSelect(`id=eq.${reMatch[1]}&select=*`);
@@ -1656,7 +1710,7 @@ Deno.serve(async (req) => {
         if (!meta.caption && row.caption) meta.caption = row.caption; // scraping can be flaky; keep what we had
         if (!meta.author && row.author) meta.author = row.author;
         if (!meta.thumb && row.thumb_url) meta.thumb = row.thumb_url; // reuse cached image for picture-recipes
-        const { card, sourceUrl, nutrition } = await buildCard(
+        const { card, sourceUrl, nutrition, timeMinutes } = await buildCard(
           meta, parsed.platform, parsed.kind, (meta as PageMeta).ldCard ?? null,
         );
         // a re-run must never downgrade: keep the old title if the new one is much longer,
@@ -1717,6 +1771,7 @@ Deno.serve(async (req) => {
           source_url: newSrc,
           thumb_url: row.thumb_url ?? await storeThumb(parsed.shortcode, meta.thumb),
           nutrition: nutrition ?? row.nutrition ?? null, // never downgrade an existing estimate
+          time_minutes: timeMinutes ?? row.time_minutes ?? null,
         };
         const pr = await fetch(`${REST}?id=eq.${row.id}`, {
           method: "PATCH",
