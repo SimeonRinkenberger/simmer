@@ -1416,6 +1416,24 @@ Deno.serve(async (req) => {
         return json({ status: "ok", explanation: text.trim() });
       }
 
+      // ----- measurement conversions the client's table can't handle -----
+      if (req.method === "POST" && sub === "/api/convert") {
+        const body = await req.json().catch(() => ({}));
+        const line = String(body.line ?? "").slice(0, 300);
+        if (!line) return json({ status: "error", message: "No ingredient given." });
+        if (!GEMINI_API_KEY && !ANTHROPIC_API_KEY && !GROQ_API_KEY) return json({ status: "error", message: "No AI key configured." });
+        const system =
+          "You are a kitchen measurement helper for a beginner cook. Given one recipe ingredient line, " +
+          "give practical equivalents for its quantity in other kitchen measures (cups/tbsp/tsp, oz/lb, grams/ml). " +
+          'Reply with 2-4 short lines, each formatted exactly like "≈ 8 tbsp" or "≈ 113 g", most useful first. ' +
+          'Add "(approx.)" to any line that depends on the ingredient’s density. ' +
+          "If the quantity isn't convertible (e.g. \"2 eggs\", \"salt to taste\"), reply with ONE short, friendly sentence " +
+          "explaining what to do instead. Plain text only, no markdown.";
+        const text = await textGenerate(system, "Ingredient line: " + line, false);
+        if (!text || !text.trim()) return json({ status: "error", message: "Couldn't convert right now — try again." });
+        return json({ status: "ok", text: text.trim().slice(0, 600) });
+      }
+
       const gidMatch = sub.match(/^\/api\/grocery\/([0-9a-f-]{36})$/);
       if (gidMatch && req.method === "DELETE") {
         const dr = await fetch(`${GREST}?id=eq.${gidMatch[1]}`, { method: "DELETE", headers: dbHeaders });

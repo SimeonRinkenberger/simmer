@@ -217,6 +217,16 @@
   .hint b { color: var(--accent); }
   .hint .x { float: right; border: none; background: none; color: var(--muted); font-size: 15px; }
 
+  .convbtn { font-size: 13px; }
+  .convrow { display: flex; align-items: baseline; gap: 10px; padding: 11px 2px; border-bottom: 1px solid var(--line); }
+  .convrow:last-of-type { border-bottom: none; }
+  .conveq { color: var(--muted); font-size: 16px; }
+  .convval { font-family: var(--serif); font-size: 21px; font-weight: 700; }
+  .convapprox { color: var(--muted); font-size: 12px; font-style: italic; margin-left: auto; }
+  .convnote { margin-top: 12px; }
+  .convai { color: var(--muted); font-size: 12.5px; margin: 10px 0 0; }
+  #convbody > p { font-size: 15px; line-height: 1.55; margin: 8px 0 0; }
+
   .scalerow { display: flex; align-items: center; gap: 8px; margin-top: 18px; flex-wrap: wrap; }
   .scalelbl { font-size: 12.5px; text-transform: uppercase; letter-spacing: 1.6px; color: var(--blue); font-weight: 700; margin-right: 2px; }
   .scalechip { border: 1px solid var(--line); background: var(--card); color: var(--text); border-radius: 999px;
@@ -334,6 +344,15 @@
   <div class="cookbottom">
     <button class="cooknavbtn" id="cookprev" aria-label="Previous step">‹</button>
     <button class="cooknavbtn next" id="cooknext" aria-label="Next step">›</button>
+  </div>
+</div>
+
+<div class="sheet" id="convsheet">
+  <div class="sheetbody">
+    <h2>Measurement help</h2>
+    <div class="expstep" id="convtitle"></div>
+    <div id="convbody"></div>
+    <p class="convnote" id="convnote" style="display:none">Volume ↔ weight equivalents assume standard measuring cups and are approximate.</p>
   </div>
 </div>
 
@@ -549,6 +568,140 @@
     return out + rest;
   }
 
+  // ---------- unit conversions (deterministic table; AI only as fallback) ----------
+  var VOL_ML = { tsp: 4.92892, tbsp: 14.7868, floz: 29.5735, cup: 236.588, ml: 1, l: 1000, stick: 118.294 };
+  var WT_G = { oz: 28.3495, lb: 453.592, g: 1, kg: 1000 };
+  // grams per ml, from standard g-per-cup baking weights
+  var DENSITY = [
+    ["brown sugar", 0.930], ["powdered sugar|icing sugar|confectioners", 0.508],
+    ["sugar", 0.845], ["flour", 0.507], ["cocoa", 0.423], ["peanut butter", 1.090],
+    ["cream cheese", 0.980], ["butter", 0.959], ["honey", 1.437], ["maple syrup", 1.320],
+    ["yogurt", 1.040], ["sour cream", 1.020], ["cream", 1.010], ["milk", 1.036],
+    ["water", 1.002], ["oil", 0.921], ["rice", 0.824], ["oats|oatmeal", 0.402]
+  ];
+
+  function canonUnit(rest) {
+    if (/^(fl\.?\s*oz|fluid\s+ounces?)\b/i.test(rest)) return "floz";
+    var m = rest.match(/^([A-Za-z]+)\.?(?=\s|$)/);
+    if (!m) return null;
+    var w = m[1];
+    if (/^(tsp|tsps|teaspoons?)$/i.test(w)) return "tsp";
+    if (/^(tbsp|tbsps|tbs|tablespoons?)$/i.test(w)) return "tbsp";
+    if (/^cups?$/i.test(w)) return "cup";
+    if (/^(ml|milliliters?|millilitres?)$/i.test(w)) return "ml";
+    if (/^(liters?|litres?)$/i.test(w)) return "l";
+    if (/^(oz|ozs|ounces?)$/i.test(w)) return "oz";
+    if (/^(lb|lbs|pounds?)$/i.test(w)) return "lb";
+    if (/^(g|grams?)$/i.test(w)) return "g";
+    if (/^(kg|kilograms?)$/i.test(w)) return "kg";
+    if (/^sticks?$/i.test(w)) return "stick";
+    return null;
+  }
+
+  function fmtDec(n) { return String(n >= 10 ? Math.round(n) : Math.round(n * 10) / 10); }
+  function fmtUnit(n, u) {
+    var s = formatQty(n);
+    if (s === null) s = fmtDec(n);
+    return s + " " + (u === "cup" ? (n > 1.001 ? "cups" : "cup") : u === "stick" ? (n > 1.001 ? "sticks" : "stick") : u);
+  }
+  function fmtGrams(g) { return g >= 1000 ? fmtDec(g / 1000) + " kg" : Math.round(g) + " g"; }
+
+  // returns [{t: "8 tbsp", approx: bool}, ...] or null when the table can't handle the line
+  function convertLine(text) {
+    var m = String(text).match(SCALE_RE);
+    if (!m || !m[2]) return null;
+    var qty = qtyToNum(m[2]);
+    if (qty === null || qty <= 0) return null;
+    var rest = String(text).slice(m[0].length).replace(/^[\s.]+/, "");
+    var unit = canonUnit(rest);
+    if (!unit) return null;
+    var name = rest.replace(/^(fl\.?\s*oz|fluid\s+ounces?|[A-Za-z]+\.?)\s*/i, "")
+      .replace(/^of\s+/i, "").toLowerCase();
+    var dens = null;
+    for (var i = 0; i < DENSITY.length; i++) {
+      if (new RegExp("\\b(" + DENSITY[i][0] + ")").test(name)) { dens = DENSITY[i][1]; break; }
+    }
+    // volume rows only get shown in ranges a cook would actually measure with that tool
+    function volRows(ml, skip, approx) {
+      var out = [];
+      if (skip !== "tsp" && ml < 45) out.push({ t: fmtUnit(ml / VOL_ML.tsp, "tsp"), approx: approx });
+      if (skip !== "tbsp" && ml >= 14 && ml <= 130) {
+        var tb = ml / VOL_ML.tbsp;
+        if (approx && tb >= 3) tb = Math.round(tb);
+        out.push({ t: fmtUnit(tb, "tbsp"), approx: approx });
+      }
+      if (skip !== "cup" && ml >= 58) out.push({ t: fmtUnit(ml / VOL_ML.cup, "cup"), approx: approx });
+      return out;
+    }
+    var rows = [];
+    if (VOL_ML[unit] != null) {
+      var ml = qty * VOL_ML[unit];
+      if (unit === "stick") rows.push({ t: fmtUnit(ml / VOL_ML.tbsp, "tbsp") });
+      rows = rows.concat(volRows(ml, unit === "stick" ? "tbsp" : unit, false));
+      if (unit !== "ml" && unit !== "l") rows.push({ t: Math.round(ml) + " ml" });
+      if (dens) rows.push({ t: fmtGrams(ml * dens), approx: true });
+    } else if (WT_G[unit] != null) {
+      var g = qty * WT_G[unit];
+      if (unit !== "oz" && g >= 14 && g < 1000) rows.push({ t: fmtDec(g / WT_G.oz) + " oz" });
+      if (unit !== "lb" && g >= 400) rows.push({ t: fmtDec(g / WT_G.lb) + " lb" });
+      if (unit !== "g" && unit !== "kg") rows.push({ t: fmtGrams(g) });
+      else if (unit === "g" && g >= 1000) rows.push({ t: fmtDec(g / 1000) + " kg" });
+      if (dens) rows = rows.concat(volRows(g / dens, "", true));
+    } else return null;
+    return rows.length ? rows : null;
+  }
+
+  var convCache = {};
+  function openConvert(line) {
+    $("convtitle").textContent = line;
+    var box = $("convbody"); box.innerHTML = "";
+    $("convnote").style.display = "none";
+    $("convsheet").classList.add("open");
+    function showRows(rows) {
+      box.innerHTML = "";
+      var anyApprox = false;
+      rows.forEach(function (rw) {
+        var d = el("div", "convrow");
+        d.appendChild(el("span", "conveq", "≈"));
+        d.appendChild(el("span", "convval", rw.t));
+        if (rw.approx) { d.appendChild(el("span", "convapprox", "approximate")); anyApprox = true; }
+        box.appendChild(d);
+      });
+      if (anyApprox) $("convnote").style.display = "";
+    }
+    function showText(t) {
+      box.innerHTML = "";
+      var lines = t.split("\n").map(function (ln) { return ln.trim(); }).filter(Boolean);
+      var measure = lines.filter(function (ln) { return /^[≈~]?\s*\d/.test(ln); });
+      if (measure.length) {
+        measure.forEach(function (ln) {
+          var approx = /\(approx\.?\)/i.test(ln);
+          var val = ln.replace(/^[≈~\s]+/, "").replace(/\s*\(approx\.?\)\s*/i, "");
+          var d = el("div", "convrow");
+          d.appendChild(el("span", "conveq", "≈"));
+          d.appendChild(el("span", "convval", val));
+          if (approx) d.appendChild(el("span", "convapprox", "approximate"));
+          box.appendChild(d);
+        });
+      } else {
+        box.appendChild(el("p", null, lines.join(" ")));
+      }
+      box.appendChild(el("p", "convai", "✨ AI estimate"));
+    }
+    var rows = convertLine(line);
+    if (rows) { showRows(rows); return; }
+    if (convCache[line]) { showText(convCache[line]); return; }
+    box.appendChild(el("p", null, "Working it out…"));
+    api("convert", { method: "POST", body: JSON.stringify({ line: line }) }).then(function (res) {
+      if ($("convtitle").textContent !== line) return;
+      if (res && res.text) { convCache[line] = res.text; showText(res.text); }
+      else { box.innerHTML = ""; box.appendChild(el("p", null, (res && res.message) || "Couldn't convert this one.")); }
+    }).catch(function () {
+      if ($("convtitle").textContent !== line) return;
+      box.innerHTML = ""; box.appendChild(el("p", null, "Network error — try again."));
+    });
+  }
+
   // ---------- detail ----------
   function embedSrc(r) {
     if (r.platform === "tiktok") return "https://www.tiktok.com/embed/v2/" + String(r.shortcode).replace(/^tt-/, "");
@@ -690,6 +843,9 @@
         var lb = document.createElement("label"); lb.htmlFor = cb.id; lb.textContent = it; lb.style.flex = "1";
         scaleables.push(function () { lb.textContent = scaleLine(it, scaleF); });
         cb.onchange = function () { row.classList.toggle("done", cb.checked); };
+        var conv = el("button", "cartbtn convbtn", "⇄");
+        conv.title = "Show measurement equivalents";
+        conv.onclick = function () { openConvert(scaleLine(it, scaleF)); };
         var cart = el("button", "cartbtn", "+");
         cart.title = "Add to grocery list";
         var myIds = null;
@@ -708,7 +864,7 @@
             cart.textContent = ids ? "✓" : "+";
           });
         };
-        row.appendChild(cb); row.appendChild(lb); row.appendChild(cart);
+        row.appendChild(cb); row.appendChild(lb); row.appendChild(conv); row.appendChild(cart);
         s1.appendChild(row);
       });
       return s1;
@@ -945,6 +1101,9 @@
   };
   $("cooksheet").addEventListener("click", function (e) {
     if (e.target === $("cooksheet")) $("cooksheet").classList.remove("open");
+  });
+  $("convsheet").addEventListener("click", function (e) {
+    if (e.target === $("convsheet")) $("convsheet").classList.remove("open");
   });
   document.addEventListener("visibilitychange", function () {
     if (!document.hidden && $("cook").classList.contains("open")) cookWakeAcquire();
