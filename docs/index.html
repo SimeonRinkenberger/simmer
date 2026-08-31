@@ -206,6 +206,8 @@
     margin-top: 2px; display: flex; align-items: center; justify-content: center; color: #fff; font-size: 14px; }
   .grow.done .gcheck { background: var(--accent); border-color: var(--accent); }
   .gname { font-size: 15.5px; font-weight: 700; text-transform: capitalize; }
+  .gtotal { color: var(--accent); font-size: 13px; font-weight: 800; margin-left: 8px; text-transform: none; }
+  .grow.done .gtotal { color: var(--muted); }
   .grow.done .gname { text-decoration: line-through; color: var(--muted); }
   .gsub { color: var(--muted); font-size: 12.5px; margin-top: 2px; line-height: 1.45; }
   .gempty { text-align: center; color: var(--muted); padding: 50px 30px; font-size: 14px; line-height: 1.5; }
@@ -1372,11 +1374,82 @@
   var AISLE_EMOJI = { "Produce": "🥬", "Meat & Seafood": "🥩", "Dairy & Eggs": "🥚", "Bakery": "🥖",
     "Pantry": "🥫", "Spices & Baking": "🧂", "Frozen": "🧊", "Other": "🛒" };
 
+  // "2 cups flour" + "1 cup flour" → one combined "3 cups" total for the group header
+  function parseQtyUnit(text) {
+    var m = String(text).match(SCALE_RE);
+    if (!m || !m[2]) return null;
+    var q = qtyToNum(m[2]);
+    if (q === null || q <= 0) return null;
+    if (m[4]) { var q2 = qtyToNum(m[4]); if (q2 !== null && q2 > q) q = q2; } // ranges: shop for the max
+    var rest = String(text).slice(m[0].length).replace(/^[\s.]+/, "");
+    if (/^\s*%/.test(rest)) return null;
+    var canon = canonUnit(rest);
+    var word = null;
+    if (!canon) {
+      // "1 large egg" — size adjectives are not counters
+      var wm = rest.match(/^(?:(?:large|medium|small|extra|whole|fresh)[\s-]+)*([A-Za-z]+)/i);
+      word = wm ? wm[1].toLowerCase().replace(/s$/, "") : "";
+    }
+    return { q: q, canon: canon, word: word };
+  }
+
+  function groupTotal(g) {
+    var ml = 0, wg = 0, counts = {}, countOrder = [];
+    g.rows.forEach(function (r) {
+      var p = parseQtyUnit(r.text);
+      if (!p) return;
+      if (p.canon && VOL_ML[p.canon] != null) ml += p.q * VOL_ML[p.canon];
+      else if (p.canon && WT_G[p.canon] != null) wg += p.q * WT_G[p.canon];
+      else {
+        var k = p.word || "";
+        if (!(k in counts)) { counts[k] = 0; countOrder.push(k); }
+        counts[k] += p.q;
+      }
+    });
+    // "13 tbsp butter" + "150 g butter": merge across families when we know the density
+    var merged = false;
+    if (ml > 0 && wg > 0) {
+      for (var di = 0; di < DENSITY.length; di++) {
+        if (new RegExp("\\b(" + DENSITY[di][0] + ")").test(g.name.toLowerCase())) {
+          ml += wg / DENSITY[di][1];
+          wg = 0; merged = true;
+          break;
+        }
+      }
+    }
+    var parts = [];
+    if (ml > 0) {
+      var cupsV = ml / VOL_ML.cup;
+      var niceCup = [0.25, 1 / 3, 0.5, 2 / 3, 0.75].some(function (n) { return Math.abs(cupsV - n) < 0.02; });
+      if (cupsV >= 0.995 || niceCup) parts.push(fmtUnit(cupsV, "cup"));
+      else if (ml >= 14) parts.push(fmtUnit(ml / VOL_ML.tbsp, "tbsp"));
+      else parts.push(fmtUnit(ml / VOL_ML.tsp, "tsp"));
+    }
+    if (wg > 0) {
+      if (wg >= 454) parts.push(fmtDec(wg / WT_G.lb) + " lb");
+      else if (wg >= 28) parts.push(fmtDec(wg / WT_G.oz) + " oz");
+      else parts.push(Math.round(wg) + " g");
+    }
+    countOrder.forEach(function (k) {
+      var n = counts[k];
+      var num = formatQty(n); if (num === null) num = fmtDec(n);
+      // the word after the number is often the item itself ("3 eggs") — the header
+      // already names it, so only spell out real counters like "cloves" or "cans"
+      if (k && g.name.toLowerCase().indexOf(k) < 0) parts.push(num + " " + k + (n > 1.001 ? "s" : ""));
+      else parts.push(num);
+    });
+    if (!parts.length) return null;
+    return (merged ? "≈ " : "") + parts.join(" + ");
+  }
+
   function groceryRow(g) {
     var row = el("div", "grow" + (g.done ? " done" : ""));
     var cb = el("div", "gcheck", g.done ? "✓" : "");
     var body = el("div", null); body.style.flex = "1";
-    body.appendChild(el("div", "gname", g.name));
+    var nameLine = el("div", "gname", g.name);
+    var total = groupTotal(g);
+    if (total) nameLine.appendChild(el("span", "gtotal", total));
+    body.appendChild(nameLine);
     var subs = g.rows.map(function (r) {
       return r.text + (r.recipe_title ? " — " + r.recipe_title : "");
     });

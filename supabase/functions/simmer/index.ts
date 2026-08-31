@@ -486,11 +486,24 @@ function cleanTitle(s: string): string {
 function normalizeItem(text: string): string {
   let s = text.toLowerCase();
   s = s.replace(/\(.*?\)/g, " ");            // "(28 ounce)"
-  s = s.split(/,| - | – |;/)[0];             // ", sliced"
+  s = s.split(/,| - | – |;| \+ /)[0];        // ", sliced", "+ extra for coating"
   // longer unit tokens must come before their single-letter prefixes ("lbs" before "l")
   const UNITS = "cups?|tbsps?|tablespoons?|tsps?|teaspoons?|grams?|kg|ml|liters?|lbs?|pounds?|oz|ounces?|cloves?|cans?|sticks?|slices?|pieces?|pinch(?:es)?|dash(?:es)?|handfuls?|scoops?|packages?|pkgs?|containers?|jars?|bottles?|bunch(?:es)?|heads?|stalks?|sprigs?|large|medium|small|extra[- ]large|g|l";
-  s = s.replace(new RegExp("^(?:(?:about|approx\\.?|roughly|heaping|scant)\\s+)?[\\d\\s/.,-]*\\s*(?:(?:" + UNITS + ")\\b\\.?)?\\s*(?:of\\s+)?", "i"), "");
-  s = s.replace(/[\d/]+/g, " ").replace(/[*†]+/g, "").replace(/\bto taste\b/g, "").replace(/\s{2,}/g, " ").trim();
+  // repeat so dual quantities pass entirely: "½ cup 113 g butter", "1 cup plus 2 tbsp flour"
+  s = s.replace(new RegExp(
+    "^(?:(?:about|approx\\.?|roughly|heaping|scant)\\s+)?" +
+    "(?:[\\d\\s/.,\\-¼½¾⅓⅔⅛⅜⅝⅞⅙⅚⅕]+\\s*(?:(?:" + UNITS + ")\\b\\.?)?\\s*(?:plus\\s+|and\\s+)?)*" +
+    "(?:of\\s+)?", "i"), "");
+  s = s.replace(/[\d/¼½¾⅓⅔⅛⅜⅝⅞⅙⅚⅕]+/g, " ").replace(/[*†]+/g, "").replace(/\bto taste\b/g, "").replace(/\s{2,}/g, " ").trim();
+  // simple plural → singular on the last word, so "3 eggs" and "1 egg" combine
+  s = s.replace(/([a-z]+)$/, (w) => {
+    if (/(ss|us|is)$/.test(w) || /^(molasses|oats|grits|hummus)$/.test(w)) return w;
+    if (/oes$/.test(w)) return w.slice(0, -2);
+    if (/ies$/.test(w)) return w.slice(0, -3) + "y";
+    if (/ves$/.test(w)) return w;
+    if (/[a-z]s$/.test(w)) return w.slice(0, -1);
+    return w;
+  });
   return s || text.toLowerCase().trim();
 }
 
@@ -1427,17 +1440,24 @@ Deno.serve(async (req) => {
           const r = await fetch(`${GREST}?select=*&order=created_at.asc`, { headers: dbHeaders });
           if (!r.ok) throw new Error(await r.text());
           const rows = await r.json();
-          // items saved before the aisle column existed: classify by keyword and patch once
-          const fixes: Record<string, string[]> = {};
+          // self-heal older rows: re-derive the combining key with the current
+          // normalizeItem, and classify any missing aisle by keyword. Converges
+          // to a no-op once every row is up to date.
+          const patches: Array<{ id: string; body: Record<string, unknown> }> = [];
           for (const row of rows) {
-            if (row.aisle) continue;
-            const a = aisleFor(row.item ?? "");
-            if (a) { row.aisle = a; (fixes[a] = fixes[a] ?? []).push(row.id); }
+            const body: Record<string, unknown> = {};
+            const ni = normalizeItem(row.text ?? "");
+            if (ni && ni !== row.item) { row.item = ni; body.item = ni; }
+            if (!row.aisle) {
+              const a = aisleFor(row.item ?? "");
+              if (a) { row.aisle = a; body.aisle = a; }
+            }
+            if (Object.keys(body).length) patches.push({ id: row.id, body });
           }
-          await Promise.all(Object.entries(fixes).map(([aisle, ids]) =>
-            fetch(`${GREST}?id=in.(${ids.join(",")})`, {
-              method: "PATCH", headers: dbHeaders, body: JSON.stringify({ aisle }),
-            }).then((pr) => pr.body?.cancel()).catch((e) => console.error("aisle backfill failed", e))));
+          await Promise.all(patches.map((p) =>
+            fetch(`${GREST}?id=eq.${p.id}`, {
+              method: "PATCH", headers: dbHeaders, body: JSON.stringify(p.body),
+            }).then((pr) => pr.body?.cancel()).catch((e) => console.error("grocery self-heal failed", e))));
           return json(rows);
         }
         if (req.method === "POST") {
