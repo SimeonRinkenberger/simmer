@@ -238,6 +238,14 @@ export const PAGE_HTML = String.raw`<!DOCTYPE html>
   .convnote { margin-top: 12px; }
   .convai { color: var(--muted); font-size: 12.5px; margin: 10px 0 0; }
   #convbody > p { font-size: 15px; line-height: 1.55; margin: 8px 0 0; }
+  .subbtn { width: 100%; margin-top: 16px; border: 1.5px solid var(--accent); background: none;
+    color: var(--accent); border-radius: 12px; padding: 11px; font-size: 14px; font-weight: 700;
+    transition: transform .15s; }
+  .subbtn:active { transform: scale(.97); }
+  .subtext { font-size: 14.5px; line-height: 1.55; white-space: pre-wrap; margin-top: 12px;
+    max-height: 34vh; overflow-y: auto; }
+  #subbody .convai { margin-top: 8px; }
+  #explainsheet { z-index: 85; }
 
   .planhead { display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; }
   .planweek { font-family: var(--serif); font-size: 19px; font-weight: 700; }
@@ -308,6 +316,8 @@ export const PAGE_HTML = String.raw`<!DOCTYPE html>
     border-radius: 14px; padding: 13px; font-size: 22px; line-height: 1; box-shadow: var(--shadow); transition: transform .15s; }
   .cooknavbtn:active { transform: scale(.95); }
   .cooknavbtn.next { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .cooknavbtn.ask { flex: 0 0 64px; background: var(--accent-soft); border-color: var(--accent-soft);
+    color: var(--accent); font-weight: 800; }
   #cooksheet { z-index: 80; }
 
   @media (prefers-reduced-motion: reduce) {
@@ -414,16 +424,19 @@ export const PAGE_HTML = String.raw`<!DOCTYPE html>
   <div class="cookstep" id="cookstep"></div>
   <div class="cookbottom">
     <button class="cooknavbtn" id="cookprev" aria-label="Previous step">‹</button>
+    <button class="cooknavbtn ask" id="cookask" aria-label="Explain this step">?</button>
     <button class="cooknavbtn next" id="cooknext" aria-label="Next step">›</button>
   </div>
 </div>
 
 <div class="sheet" id="convsheet">
   <div class="sheetbody">
-    <h2>Measurement help</h2>
+    <h2>Ingredient help</h2>
     <div class="expstep" id="convtitle"></div>
     <div id="convbody"></div>
     <p class="convnote" id="convnote" style="display:none">Volume ↔ weight equivalents assume standard measuring cups and are approximate.</p>
+    <button class="subbtn" id="convsubbtn">🔄 Don't have it? Find a substitute</button>
+    <div id="subbody"></div>
   </div>
 </div>
 
@@ -724,9 +737,13 @@ export const PAGE_HTML = String.raw`<!DOCTYPE html>
   }
 
   var convCache = {};
-  function openConvert(line) {
+  var subCache = {};
+  var convCtx = { line: "", title: "" };
+  function openConvert(line, recipeTitle) {
+    convCtx = { line: line, title: recipeTitle || "" };
     $("convtitle").textContent = line;
     var box = $("convbody"); box.innerHTML = "";
+    $("subbody").innerHTML = "";
     $("convnote").style.display = "none";
     $("convsheet").classList.add("open");
     function showRows(rows) {
@@ -975,7 +992,7 @@ export const PAGE_HTML = String.raw`<!DOCTYPE html>
         cb.onchange = function () { row.classList.toggle("done", cb.checked); };
         var conv = el("button", "cartbtn convbtn", "⇄");
         conv.title = "Show measurement equivalents";
-        conv.onclick = function () { openConvert(scaleLine(it, scaleF)); };
+        conv.onclick = function () { openConvert(scaleLine(it, scaleF), r.title); };
         var cart = el("button", "cartbtn", "+");
         cart.title = "Add to grocery list";
         var myIds = null;
@@ -1172,6 +1189,7 @@ export const PAGE_HTML = String.raw`<!DOCTYPE html>
       box.appendChild(el("div", "cooktxt", cook.steps[cook.i]));
     }
     $("cooknext").style.visibility = done ? "hidden" : "";
+    $("cookask").style.visibility = done ? "hidden" : "";
     $("cookprev").style.visibility = cook.i === 0 ? "hidden" : "";
   }
   function cookGo(delta) {
@@ -1196,6 +1214,9 @@ export const PAGE_HTML = String.raw`<!DOCTYPE html>
   $("cookx").onclick = function () { closeCookMode(false); };
   $("cookprev").onclick = function () { cookGo(-1); };
   $("cooknext").onclick = function () { cookGo(1); };
+  $("cookask").onclick = function () {
+    if (cook.i < cook.steps.length) explainStep(cook.steps[cook.i], { title: cook.title });
+  };
   $("cookstep").addEventListener("click", function (e) {
     if (cook.i >= cook.steps.length) return;
     if (Date.now() - cookAte < 400) return;
@@ -1235,6 +1256,26 @@ export const PAGE_HTML = String.raw`<!DOCTYPE html>
   $("convsheet").addEventListener("click", function (e) {
     if (e.target === $("convsheet")) $("convsheet").classList.remove("open");
   });
+  $("convsubbtn").onclick = function () {
+    var ctx = convCtx;
+    var box = $("subbody"); box.innerHTML = "";
+    var ck = ctx.title + "|" + ctx.line;
+    function show(t) {
+      box.innerHTML = "";
+      box.appendChild(el("div", "subtext", t));
+      box.appendChild(el("p", "convai", "✨ AI suggestion — taste as you go"));
+    }
+    if (subCache[ck]) { show(subCache[ck]); return; }
+    box.appendChild(el("p", "subtext", "Asking the kitchen coach…"));
+    api("substitute", { method: "POST", body: JSON.stringify({ ingredient: ctx.line, title: ctx.title }) }).then(function (res) {
+      if (convCtx.line !== ctx.line) return;
+      if (res && res.text) { subCache[ck] = res.text; show(res.text); }
+      else { box.innerHTML = ""; box.appendChild(el("p", "subtext", (res && res.message) || "Couldn't get suggestions — try again.")); }
+    }).catch(function () {
+      if (convCtx.line !== ctx.line) return;
+      box.innerHTML = ""; box.appendChild(el("p", "subtext", "Network error — try again."));
+    });
+  };
   document.addEventListener("visibilitychange", function () {
     if (!document.hidden && $("cook").classList.contains("open")) cookWakeAcquire();
   });

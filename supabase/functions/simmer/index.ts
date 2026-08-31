@@ -1585,6 +1585,30 @@ Deno.serve(async (req) => {
         return json({ status: "ok", text: text.trim().slice(0, 600) });
       }
 
+      // ----- "I don't have this ingredient — what can I use instead?" -----
+      if (req.method === "POST" && sub === "/api/substitute") {
+        const body = await req.json().catch(() => ({}));
+        const ing = String(body.ingredient ?? "").slice(0, 300);
+        const title = String(body.title ?? "").slice(0, 150);
+        if (!ing) return json({ status: "error", message: "No ingredient given." });
+        if (!GEMINI_API_KEY && !ANTHROPIC_API_KEY && !GROQ_API_KEY) return json({ status: "error", message: "No AI key configured." });
+        const system =
+          "You are a warm, practical cooking teacher helping a beginner home cook who is missing an ingredient. " +
+          "Suggest the best 1-3 substitutes likely to be in a home kitchen, each with the amount to use, and be honest " +
+          "about drawbacks or changes to taste and texture. If nothing substitutes well, say so plainly and explain " +
+          "whether the dish still works without it. Keep it short: 3-6 short lines or sentences of plain text, " +
+          "no markdown, no headings.";
+        const user = (title ? `Recipe: ${title}\n` : "") + `Missing ingredient: "${ing}"`;
+        let text = "";
+        try {
+          text = (await textGenerate(system, user, false)) ?? "";
+        } catch (e) {
+          console.error("substitute failed", e);
+        }
+        if (!text.trim()) return json({ status: "error", message: "Couldn't get suggestions right now — try again." });
+        return json({ status: "ok", text: text.trim().slice(0, 900) });
+      }
+
       const gidMatch = sub.match(/^\/api\/grocery\/([0-9a-f-]{36})$/);
       if (gidMatch && req.method === "DELETE") {
         const dr = await fetch(`${GREST}?id=eq.${gidMatch[1]}`, { method: "DELETE", headers: dbHeaders });
