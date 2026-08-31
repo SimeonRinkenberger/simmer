@@ -1115,10 +1115,42 @@ async function generateSteps(title: string, ingredients: string[], caption: stri
   } catch { return null; }
 }
 
+// One extra AI call per save: rough per-serving macros from the ingredient list.
+// Best-effort only — a null result must never block or delay a save's data.
+type Nutrition = { calories: number; protein_g: number; carbs_g: number; fat_g: number; servings: number };
+
+async function estimateNutrition(title: string, ingredients: string[]): Promise<Nutrition | null> {
+  if (ingredients.length < 3) return null;
+  try {
+    const system =
+      `You estimate nutrition for home cooking. Given a dish name and its full ingredient list, estimate how many ` +
+      `servings it makes and the PER-SERVING nutrition. Reply with ONLY a JSON object: ` +
+      `{"calories": int, "protein_g": int, "carbs_g": int, "fat_g": int, "servings": int}. Round sensibly, no commentary.`;
+    const user = `Dish: ${title}\nIngredients:\n${ingredients.slice(0, 60).join("\n")}`;
+    const text = await textGenerate(system, user, true);
+    if (!text) return null;
+    const raw = parseJsonLoose(text) as Record<string, unknown>;
+    const num = (k: string) => { const v = Number(raw[k]); return isFinite(v) && v >= 0 ? Math.round(v) : null; };
+    const cal = num("calories");
+    if (cal === null || cal <= 0 || cal > 5000) return null;
+    const servings = num("servings");
+    return {
+      calories: cal,
+      protein_g: num("protein_g") ?? 0,
+      carbs_g: num("carbs_g") ?? 0,
+      fat_g: num("fat_g") ?? 0,
+      servings: servings && servings > 0 ? servings : 1,
+    };
+  } catch (e) {
+    console.error("nutrition estimate failed", e);
+    return null;
+  }
+}
+
 async function buildCard(
   meta: Meta, platform: string, kind = "reel",
   preCard: (Card & { source_url?: string | null }) | null = null,
-): Promise<{ card: Card; sourceUrl: string | null }> {
+): Promise<{ card: Card; sourceUrl: string | null; nutrition: Nutrition | null }> {
   // a page that carried its own JSON-LD recipe skips extraction and the web hunt entirely
   const card = preCard ?? await extractCard(meta.caption, meta.author, platform);
   let sourceUrl: string | null = preCard ? (preCard.source_url ?? null) : null;
@@ -1199,7 +1231,12 @@ async function buildCard(
       if (gen && gen.length) { sr.steps = gen; sr.ai_steps = true; }
     }
   }));
-  return { card, sourceUrl };
+  // nutrition is single-recipe only (skip Meal Prep cards to keep scope sane)
+  let nutrition: Nutrition | null = null;
+  if (!(card.sub_recipes ?? []).length && card.ingredients.length >= 3) {
+    nutrition = await estimateNutrition(card.title, card.ingredients).catch(() => null);
+  }
+  return { card, sourceUrl, nutrition };
 }
 
 async function extractCard(caption: string | null, author: string | null, platform: string): Promise<Card> {
@@ -1310,7 +1347,7 @@ async function handleIngest(req: Request): Promise<Response> {
   }
 
   const meta = await fetchMeta(parsed);
-  const { card, sourceUrl } = await buildCard(
+  const { card, sourceUrl, nutrition } = await buildCard(
     meta, parsed.platform, parsed.kind, (meta as PageMeta).ldCard ?? null,
   );
   const thumb = await storeThumb(parsed.shortcode, meta.thumb);
@@ -1332,6 +1369,7 @@ async function handleIngest(req: Request): Promise<Response> {
     has_full_recipe: card.has_full_recipe,
     source_url: sourceUrl ?? (parsed.platform === "web" ? parsed.clean : null),
     sub_recipes: card.sub_recipes ?? [],
+    nutrition,
   });
 
   return json({
@@ -1534,7 +1572,7 @@ Deno.serve(async (req) => {
         if (!meta.caption && row.caption) meta.caption = row.caption; // scraping can be flaky; keep what we had
         if (!meta.author && row.author) meta.author = row.author;
         if (!meta.thumb && row.thumb_url) meta.thumb = row.thumb_url; // reuse cached image for picture-recipes
-        const { card, sourceUrl } = await buildCard(
+        const { card, sourceUrl, nutrition } = await buildCard(
           meta, parsed.platform, parsed.kind, (meta as PageMeta).ldCard ?? null,
         );
         // a re-run must never downgrade: keep the old title if the new one is much longer,
@@ -1594,6 +1632,7 @@ Deno.serve(async (req) => {
           sub_recipes: card.sub_recipes ?? [],
           source_url: newSrc,
           thumb_url: row.thumb_url ?? await storeThumb(parsed.shortcode, meta.thumb),
+          nutrition: nutrition ?? row.nutrition ?? null, // never downgrade an existing estimate
         };
         const pr = await fetch(`${REST}?id=eq.${row.id}`, {
           method: "PATCH",

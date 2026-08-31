@@ -239,6 +239,11 @@ export const PAGE_HTML = String.raw`<!DOCTYPE html>
   .convai { color: var(--muted); font-size: 12.5px; margin: 10px 0 0; }
   #convbody > p { font-size: 15px; line-height: 1.55; margin: 8px 0 0; }
 
+  .nutrow { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; align-items: center; }
+  .nutchip { background: var(--blue-soft); color: var(--blue); border-radius: 999px;
+    padding: 5px 10px; font-size: 12px; font-weight: 700; }
+  .nutlabel { color: var(--muted); font-size: 11.5px; margin-left: 2px; }
+
   .scalerow { display: flex; align-items: center; gap: 8px; margin-top: 18px; flex-wrap: wrap; }
   .scalelbl { font-size: 12.5px; text-transform: uppercase; letter-spacing: 1.6px; color: var(--blue); font-weight: 700; margin-right: 2px; }
   .scalechip { border: 1px solid var(--line); background: var(--card); color: var(--text); border-radius: 999px;
@@ -826,6 +831,17 @@ export const PAGE_HTML = String.raw`<!DOCTYPE html>
       : "Open in Instagram ↗");
     mr.appendChild(link);
     c.appendChild(mr);
+
+    if (r.nutrition && r.nutrition.calories) {
+      var nu = r.nutrition;
+      var nr = el("div", "nutrow");
+      nr.appendChild(el("span", "nutchip", "~" + nu.calories + " cal"));
+      if (nu.protein_g) nr.appendChild(el("span", "nutchip", nu.protein_g + "g protein"));
+      if (nu.carbs_g) nr.appendChild(el("span", "nutchip", nu.carbs_g + "g carbs"));
+      if (nu.fat_g) nr.appendChild(el("span", "nutchip", nu.fat_g + "g fat"));
+      nr.appendChild(el("span", "nutlabel", "per serving · ✨ AI estimate"));
+      c.appendChild(nr);
+    }
 
     var scaleF = 1;          // resets every time a recipe is opened
     var scaleables = [];     // row updaters run when the scale changes
