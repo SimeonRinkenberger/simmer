@@ -181,8 +181,8 @@ export const PAGE_HTML = String.raw`<!DOCTYPE html>
     -webkit-backdrop-filter: blur(14px); backdrop-filter: blur(14px);
     border-top: 1px solid var(--line);
     padding: 8px 14px calc(8px + env(safe-area-inset-bottom)); }
-  .tab { flex: 1; border: none; background: none; color: var(--muted); font-size: 14.5px; font-weight: 700;
-    padding: 10px; border-radius: 12px; }
+  .tab { flex: 1; border: none; background: none; color: var(--muted); font-size: 13px; font-weight: 700;
+    padding: 10px 4px; border-radius: 12px; white-space: nowrap; }
   .tab.active { color: var(--accent); background: var(--accent-soft); }
   .badge { background: var(--accent); color: #fff; border-radius: 999px; font-size: 11px; font-weight: 700;
     padding: 1px 6px; margin-left: 3px; display: none; }
@@ -238,6 +238,35 @@ export const PAGE_HTML = String.raw`<!DOCTYPE html>
   .convnote { margin-top: 12px; }
   .convai { color: var(--muted); font-size: 12.5px; margin: 10px 0 0; }
   #convbody > p { font-size: 15px; line-height: 1.55; margin: 8px 0 0; }
+
+  .planhead { display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; }
+  .planweek { font-family: var(--serif); font-size: 19px; font-weight: 700; }
+  .planday { background: var(--card); border: 1px solid var(--line); border-radius: 16px;
+    padding: 10px 12px 4px; margin-bottom: 10px; box-shadow: var(--shadow); }
+  .planday.today { border-color: var(--blue); }
+  .plandayname { font-weight: 800; font-size: 12.5px; letter-spacing: 1.4px; text-transform: uppercase;
+    color: var(--blue); margin-bottom: 2px; }
+  .planday.today .plandayname::after { content: " · today"; color: var(--accent); }
+  .planslot { display: flex; align-items: center; gap: 8px; padding: 6px 0; }
+  .planslot + .planslot { border-top: 1px solid var(--line); }
+  .slotlbl { flex: 0 0 72px; font-size: 12px; color: var(--muted); font-weight: 700; }
+  .slotadd { flex: 1; text-align: left; border: 1.5px dashed var(--line); background: none;
+    color: var(--muted); border-radius: 10px; padding: 8px 10px; font-size: 13px; font-weight: 600; }
+  .slotadd:active { transform: scale(.98); }
+  .slotrec { flex: 1; display: flex; align-items: center; gap: 8px; background: var(--bg);
+    border: 1px solid var(--line); border-radius: 10px; padding: 5px 8px; min-width: 0; }
+  .slotrec img { width: 30px; height: 30px; border-radius: 8px; object-fit: cover; flex: 0 0 30px; }
+  .slotrec .t { flex: 1; font-size: 13px; font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .slotx { border: none; background: none; color: var(--muted); font-size: 15px; padding: 2px 4px; flex: 0 0 auto; }
+  #plangrocery { margin-top: 4px; margin-bottom: 8px; }
+  #picklist { max-height: 46vh; overflow-y: auto; margin-top: 12px; }
+  .pickrow { display: flex; align-items: center; gap: 10px; padding: 9px 2px; border-bottom: 1px solid var(--line); cursor: pointer; }
+  .pickrow:last-child { border-bottom: none; }
+  .pickrow img, .pickrow .noimg { width: 42px; height: 42px; border-radius: 10px; object-fit: cover;
+    flex: 0 0 42px; background: var(--blue-soft); display: flex; align-items: center; justify-content: center; font-size: 20px; }
+  .pickrow .t { flex: 1; min-width: 0; }
+  .pickrow .tt { font-size: 14.5px; font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .pickrow .tc { font-size: 12px; color: var(--muted); }
 
   .nutrow { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; align-items: center; }
   .nutchip { background: var(--blue-soft); color: var(--blue); border-radius: 999px;
@@ -333,11 +362,30 @@ export const PAGE_HTML = String.raw`<!DOCTYPE html>
 
 <nav class="tabbar">
   <button class="tab active" id="tab-recipes">🍲 Recipes</button>
+  <button class="tab" id="tab-plan">📅 Plan</button>
   <button class="tab" id="tab-made">⭐ Made</button>
   <button class="tab" id="tab-grocery">🛒 Grocery<span class="badge" id="gbadge"></span></button>
 </nav>
 
+<div id="planview" class="gwrap" style="display:none">
+  <div class="planhead">
+    <button class="iconbtn" id="planprev" aria-label="Previous week">‹</button>
+    <div class="planweek" id="planweek"></div>
+    <button class="iconbtn" id="plannext" aria-label="Next week">›</button>
+  </div>
+  <div id="plandays"></div>
+  <button class="primary" id="plangrocery">🛒 Add this week to grocery list</button>
+</div>
+
 <div class="overlay" id="detail"></div>
+
+<div class="sheet" id="picksheet">
+  <div class="sheetbody">
+    <h2 id="picktitle">Add a meal</h2>
+    <input class="urlinput" id="picksearch" type="search" placeholder="Search your recipes…" autocapitalize="off">
+    <div id="picklist"></div>
+  </div>
+</div>
 
 <div class="sheet" id="addsheet">
   <div class="sheetbody">
@@ -1350,21 +1398,184 @@ export const PAGE_HTML = String.raw`<!DOCTYPE html>
     api("grocery?checked=true", { method: "DELETE" }).then(function () { loadGrocery(); toast("Cleared"); });
   };
 
+  // ---------- weekly meal planner ----------
+  var SLOTS = [["breakfast", "Breakfast"], ["lunch", "Lunch"], ["dinner", "Dinner"]];
+  var DAY_NAMES = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+  var MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+
+  function mondayOf(d) {
+    var x = new Date(d.getFullYear(), d.getMonth(), d.getDate());
+    x.setDate(x.getDate() - ((x.getDay() + 6) % 7));
+    return x;
+  }
+  function pad2(n) { return (n < 10 ? "0" : "") + n; }
+  function ymd(d) { return d.getFullYear() + "-" + pad2(d.getMonth() + 1) + "-" + pad2(d.getDate()); }
+  state.planStart = mondayOf(new Date());
+  state.plan = [];
+  var pickTarget = null;
+
+  function recipeById(id) {
+    for (var i = 0; i < state.recipes.length; i++) if (state.recipes[i].id === id) return state.recipes[i];
+    return null;
+  }
+
+  function loadPlan() {
+    return api("plan?start=" + ymd(state.planStart)).then(function (rows) {
+      if (Array.isArray(rows)) { state.plan = rows; renderPlan(); }
+    }).catch(function () {});
+  }
+
+  function renderPlan() {
+    var end = new Date(state.planStart); end.setDate(end.getDate() + 6);
+    $("planweek").textContent = MONTHS[state.planStart.getMonth()] + " " + state.planStart.getDate() +
+      " – " + (end.getMonth() === state.planStart.getMonth() ? "" : MONTHS[end.getMonth()] + " ") + end.getDate();
+    var box = $("plandays"); box.innerHTML = "";
+    var todayS = ymd(new Date());
+    for (var di = 0; di < 7; di++) {
+      (function (di) {
+        var d = new Date(state.planStart); d.setDate(d.getDate() + di);
+        var dayS = ymd(d);
+        var card = el("div", "planday" + (dayS === todayS ? " today" : ""));
+        card.appendChild(el("div", "plandayname", DAY_NAMES[di] + " " + MONTHS[d.getMonth()] + " " + d.getDate()));
+        SLOTS.forEach(function (sl) {
+          var row = el("div", "planslot");
+          row.appendChild(el("span", "slotlbl", sl[1]));
+          var entries = state.plan.filter(function (p) { return p.day === dayS && p.slot === sl[0]; });
+          if (!entries.length) {
+            var add = el("button", "slotadd", "+ Add");
+            add.onclick = function () { openPicker(dayS, sl[0], DAY_NAMES[di] + " " + sl[1].toLowerCase()); };
+            row.appendChild(add);
+          } else {
+            entries.forEach(function (p) {
+              var r = recipeById(p.recipe_id);
+              var chip = el("div", "slotrec");
+              if (r && r.thumb_url) {
+                var im = document.createElement("img"); im.src = r.thumb_url; im.alt = "";
+                chip.appendChild(im);
+              }
+              var t = el("span", "t", r ? (r.title || "Untitled") : "(deleted recipe)");
+              t.onclick = function () { if (r) openDetail(r); };
+              chip.appendChild(t);
+              var x = el("button", "slotx", "✕");
+              x.setAttribute("aria-label", "Remove from plan");
+              x.onclick = function (ev) {
+                ev.stopPropagation();
+                api("plan/" + p.id, { method: "DELETE" }).then(function () {
+                  state.plan = state.plan.filter(function (q) { return q.id !== p.id; });
+                  renderPlan();
+                }).catch(function () { toast("Network error"); });
+              };
+              chip.appendChild(x);
+              row.appendChild(chip);
+            });
+          }
+          card.appendChild(row);
+        });
+        box.appendChild(card);
+      })(di);
+    }
+  }
+
+  function openPicker(dayS, slot, label) {
+    pickTarget = { day: dayS, slot: slot };
+    $("picktitle").textContent = "Add to " + label;
+    $("picksearch").value = "";
+    renderPickList("");
+    $("picksheet").classList.add("open");
+  }
+
+  function renderPickList(q) {
+    var list = $("picklist"); list.innerHTML = "";
+    q = q.toLowerCase();
+    var rows = state.recipes.filter(function (r) {
+      if (!q) return true;
+      return ([r.title, r.cuisine, r.author, r.category].join(" ").toLowerCase().indexOf(q) >= 0);
+    }).slice(0, 30);
+    if (!rows.length) list.appendChild(el("p", null, "No recipes match."));
+    rows.forEach(function (r) {
+      var row = el("div", "pickrow");
+      if (r.thumb_url) {
+        var im = document.createElement("img"); im.src = r.thumb_url; im.alt = "";
+        row.appendChild(im);
+      } else row.appendChild(el("div", "noimg", "🍽️"));
+      var t = el("div", "t");
+      t.appendChild(el("div", "tt", r.title || "Untitled"));
+      t.appendChild(el("div", "tc", [r.category, r.cuisine].filter(Boolean).join(" · ")));
+      row.appendChild(t);
+      row.onclick = function () {
+        if (!pickTarget) return;
+        $("picksheet").classList.remove("open");
+        api("plan", { method: "POST", body: JSON.stringify({ day: pickTarget.day, slot: pickTarget.slot, recipe_id: r.id }) })
+          .then(function (res) {
+            if (res && res.entry) { state.plan.push(res.entry); renderPlan(); toast("Planned: " + (r.title || "recipe")); }
+            else toast((res && res.message) || "Could not plan");
+          }).catch(function () { toast("Network error"); });
+      };
+      list.appendChild(row);
+    });
+  }
+  $("picksearch").addEventListener("input", function (e) { renderPickList(e.target.value); });
+  $("picksheet").addEventListener("click", function (e) {
+    if (e.target === $("picksheet")) $("picksheet").classList.remove("open");
+  });
+
+  $("planprev").onclick = function () {
+    state.planStart.setDate(state.planStart.getDate() - 7);
+    renderPlan(); loadPlan();
+  };
+  $("plannext").onclick = function () {
+    state.planStart.setDate(state.planStart.getDate() + 7);
+    renderPlan(); loadPlan();
+  };
+
+  $("plangrocery").onclick = function () {
+    var seen = {};
+    var items = [];
+    state.plan.forEach(function (p) {
+      if (seen[p.recipe_id]) return;
+      seen[p.recipe_id] = true;
+      var r = recipeById(p.recipe_id);
+      if (!r) return;
+      var ings = Array.isArray(r.ingredients) ? r.ingredients.slice() : [];
+      (Array.isArray(r.sub_recipes) ? r.sub_recipes : []).forEach(function (sr) {
+        (sr.ingredients || []).forEach(function (t) { ings.push(t); });
+      });
+      ings.forEach(function (t) {
+        items.push({ text: t, recipe_id: r.id, recipe_title: r.title });
+      });
+    });
+    if (!items.length) { toast("Nothing planned this week yet"); return; }
+    var b = $("plangrocery"); b.disabled = true;
+    api("grocery", { method: "POST", body: JSON.stringify({ items: items.slice(0, 100) }) }).then(function (res) {
+      b.disabled = false;
+      if (res && res.status === "added") {
+        toast("Added " + (res.items || []).length + " ingredients to the grocery list");
+        loadGrocery();
+      } else toast((res && res.message) || "Could not add");
+    }).catch(function () { b.disabled = false; toast("Network error"); });
+  };
+
   function setView(v) {
     state.view = v;
-    var rec = v === "recipes", made = v === "made", groc = v === "grocery";
+    var rec = v === "recipes", made = v === "made", groc = v === "grocery", plan = v === "plan";
+    var full = groc || plan; // views that replace the grid entirely
     $("tab-recipes").classList.toggle("active", rec);
+    $("tab-plan").classList.toggle("active", plan);
     $("tab-made").classList.toggle("active", made);
     $("tab-grocery").classList.toggle("active", groc);
-    $("chips").style.display = groc ? "none" : "";
-    $("grid").style.display = groc ? "none" : "";
-    document.querySelector(".searchwrap").style.display = groc ? "none" : "";
+    $("chips").style.display = full ? "none" : "";
+    $("grid").style.display = full ? "none" : "";
+    document.querySelector(".searchwrap").style.display = full ? "none" : "";
     $("groceryview").style.display = groc ? "" : "none";
+    $("planview").style.display = plan ? "" : "none";
     if (made) state.madeStars = 0;
-    if (groc) { $("empty").style.display = "none"; loadGrocery(); }
+    if (full) $("empty").style.display = "none";
+    if (groc) loadGrocery();
+    else if (plan) { renderPlan(); loadPlan(); }
     else render();
   }
   $("tab-recipes").onclick = function () { setView("recipes"); };
+  $("tab-plan").onclick = function () { setView("plan"); };
   $("tab-made").onclick = function () { setView("made"); };
   $("tab-grocery").onclick = function () { setView("grocery"); };
 

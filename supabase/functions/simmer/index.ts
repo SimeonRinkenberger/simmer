@@ -489,8 +489,8 @@ function normalizeItem(text: string): string {
   s = s.split(/,| - | – |;/)[0];             // ", sliced"
   // longer unit tokens must come before their single-letter prefixes ("lbs" before "l")
   const UNITS = "cups?|tbsps?|tablespoons?|tsps?|teaspoons?|grams?|kg|ml|liters?|lbs?|pounds?|oz|ounces?|cloves?|cans?|sticks?|slices?|pieces?|pinch(?:es)?|dash(?:es)?|handfuls?|scoops?|packages?|pkgs?|containers?|jars?|bottles?|bunch(?:es)?|heads?|stalks?|sprigs?|large|medium|small|extra[- ]large|g|l";
-  s = s.replace(new RegExp("^(?:(?:about|approx\\.?|roughly|heaping|scant)\\s+)?[\\d\\s/.,-]*\\s*(?:" + UNITS + ")?\\s*(?:of\\s+)?", "i"), "");
-  s = s.replace(/[\d/]+/g, " ").replace(/\bto taste\b/g, "").replace(/\s{2,}/g, " ").trim();
+  s = s.replace(new RegExp("^(?:(?:about|approx\\.?|roughly|heaping|scant)\\s+)?[\\d\\s/.,-]*\\s*(?:(?:" + UNITS + ")\\b\\.?)?\\s*(?:of\\s+)?", "i"), "");
+  s = s.replace(/[\d/]+/g, " ").replace(/[*†]+/g, "").replace(/\bto taste\b/g, "").replace(/\s{2,}/g, " ").trim();
   return s || text.toLowerCase().trim();
 }
 
@@ -1525,6 +1525,46 @@ Deno.serve(async (req) => {
         }
         if (!text.trim()) return json({ status: "error", message: "Couldn't get an explanation right now — try again." });
         return json({ status: "ok", explanation: text.trim() });
+      }
+
+      // ----- weekly meal plan -----
+      const PREST = `${SUPABASE_URL}/rest/v1/meal_plan`;
+      if (sub === "/api/plan") {
+        if (req.method === "GET") {
+          const start = url.searchParams.get("start") ?? "";
+          if (!/^\d{4}-\d{2}-\d{2}$/.test(start)) return json({ status: "error", message: "Bad start date." });
+          const end = new Date(start + "T00:00:00Z");
+          end.setUTCDate(end.getUTCDate() + 7);
+          const endS = end.toISOString().slice(0, 10);
+          const r = await fetch(
+            `${PREST}?day=gte.${start}&day=lt.${endS}&select=*&order=day.asc,created_at.asc`,
+            { headers: dbHeaders },
+          );
+          if (!r.ok) throw new Error(await r.text());
+          return json(await r.json());
+        }
+        if (req.method === "POST") {
+          const body = await req.json().catch(() => ({}));
+          const day = String(body.day ?? "");
+          const slot = String(body.slot ?? "dinner");
+          const rid = String(body.recipe_id ?? "");
+          if (!/^\d{4}-\d{2}-\d{2}$/.test(day)) return json({ status: "error", message: "Bad day." });
+          if (!["breakfast", "lunch", "dinner"].includes(slot)) return json({ status: "error", message: "Bad slot." });
+          if (!/^[0-9a-f-]{36}$/.test(rid)) return json({ status: "error", message: "Bad recipe." });
+          const r = await fetch(PREST, {
+            method: "POST",
+            headers: { ...dbHeaders, prefer: "return=representation" },
+            body: JSON.stringify({ day, slot, recipe_id: rid }),
+          });
+          if (!r.ok) throw new Error(await r.text());
+          return json({ status: "added", entry: (await r.json())[0] });
+        }
+      }
+      const pidMatch = sub.match(/^\/api\/plan\/([0-9a-f-]{36})$/);
+      if (pidMatch && req.method === "DELETE") {
+        const dr = await fetch(`${PREST}?id=eq.${pidMatch[1]}`, { method: "DELETE", headers: dbHeaders });
+        if (!dr.ok) throw new Error(await dr.text());
+        return json({ status: "deleted" });
       }
 
       // ----- measurement conversions the client's table can't handle -----
