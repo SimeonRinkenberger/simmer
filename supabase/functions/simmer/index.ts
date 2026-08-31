@@ -66,9 +66,9 @@ function metaTag(html: string, prop: string): string | null {
 // ---------- URL parsing ----------
 
 type Parsed = {
-  platform: "instagram" | "tiktok";
-  shortcode: string;   // unique key (tiktok ids prefixed tt-)
-  kind: string;        // reel | p | tv | video
+  platform: "instagram" | "tiktok" | "youtube" | "web";
+  shortcode: string;   // unique key (tiktok ids prefixed tt-, youtube yt-, generic pages web-<hash>)
+  kind: string;        // reel | p | tv | video | page
   clean: string;       // canonical link
 };
 
@@ -95,12 +95,39 @@ function matchTikTok(u: string): Parsed | null {
   };
 }
 
+function matchYouTube(u: string): Parsed | null {
+  const m = u.match(/(?:youtube\.com\/(?:watch\?[^#\s]*\bv=|shorts\/|embed\/|live\/)|youtu\.be\/)([A-Za-z0-9_-]{6,20})/);
+  if (!m) return null;
+  return {
+    platform: "youtube",
+    shortcode: `yt-${m[1]}`,
+    kind: "video",
+    clean: `https://www.youtube.com/watch?v=${m[1]}`,
+  };
+}
+
+// Any other http(s) page — recipe blogs, Pinterest, news sites. Keyed by a hash of the cleaned URL.
+async function webParsed(target: string): Promise<Parsed | null> {
+  let u: URL;
+  try { u = new URL(target.split("#")[0]); } catch { return null; }
+  if (!/^https?:$/.test(u.protocol)) return null;
+  // social links that failed their own matcher (profiles, channels) make junk cards — reject
+  if (/(^|\.)(instagram\.com|tiktok\.com|facebook\.com|youtube\.com|youtu\.be)$/i.test(u.hostname)) return null;
+  for (const k of ["utm_source", "utm_medium", "utm_campaign", "utm_term", "utm_content", "fbclid", "gclid", "igsh", "mc_cid", "mc_eid"]) {
+    u.searchParams.delete(k);
+  }
+  const clean = u.toString();
+  const buf = await crypto.subtle.digest("SHA-1", new TextEncoder().encode(clean.toLowerCase()));
+  const hex = [...new Uint8Array(buf)].map((b) => b.toString(16).padStart(2, "0")).join("");
+  return { platform: "web", shortcode: `web-${hex.slice(0, 16)}`, kind: "page", clean };
+}
+
 async function resolveShare(raw: string): Promise<Parsed | null> {
   const urlMatch = raw.match(/https?:\/\/[^\s"'<>]+/);
   if (!urlMatch) return null;
   let target = urlMatch[0];
 
-  let parsed = matchInstagram(target) ?? matchTikTok(target);
+  let parsed = matchInstagram(target) ?? matchTikTok(target) ?? matchYouTube(target);
   if (parsed) return parsed;
 
   // Short/share links (instagram.com/share/..., vm.tiktok.com/...): follow redirects.
@@ -118,10 +145,10 @@ async function resolveShare(raw: string): Promise<Parsed | null> {
     target = new URL(loc, target).toString();
     // login redirects carry the real path in ?next=
     const next = new URL(target).searchParams.get("next");
-    parsed = matchInstagram(target) ?? matchTikTok(target) ??
+    parsed = matchInstagram(target) ?? matchTikTok(target) ?? matchYouTube(target) ??
       (next ? matchInstagram("https://www.instagram.com" + next) : null);
   }
-  return parsed;
+  return parsed ?? await webParsed(target);
 }
 
 // ---------- metadata scraping ----------
@@ -310,6 +337,114 @@ async function ttMeta(p: Parsed): Promise<Meta> {
     }
   } catch (_) { /* fall through */ }
   return { caption: null, thumb: null, author: null };
+}
+
+async function ytMeta(p: Parsed): Promise<Meta> {
+  let caption: string | null = null;
+  let thumb: string | null = null;
+  let author: string | null = null;
+  try {
+    const r = await fetch(
+      `https://www.youtube.com/oembed?url=${encodeURIComponent(p.clean)}&format=json`,
+      { headers: { "User-Agent": DESKTOP_UA }, signal: AbortSignal.timeout(10000) },
+    );
+    if (r.ok) {
+      const o = await r.json();
+      caption = o.title ?? null;
+      thumb = o.thumbnail_url ?? null;
+      author = o.author_name ?? null;
+    }
+  } catch (_) { /* fall through */ }
+  // the description (where creators paste the recipe) isn't in oEmbed — read it off the watch page
+  try {
+    const r = await fetch(p.clean, {
+      headers: { "User-Agent": DESKTOP_UA, "Accept-Language": "en-US" },
+      signal: AbortSignal.timeout(10000),
+    });
+    if (r.ok) {
+      const html = await r.text();
+      const m = html.match(/"shortDescription":"((?:[^"\\]|\\.)*)"/);
+      if (m) {
+        try {
+          const desc = JSON.parse('"' + m[1] + '"');
+          if (desc && desc.length > 20) caption = (caption ? caption + "\n\n" : "") + desc;
+        } catch (_) { /* keep oEmbed title */ }
+      }
+      if (!thumb) thumb = metaTag(html, "og:image");
+    }
+  } catch (_) { /* fall through */ }
+  if (!thumb) thumb = `https://i.ytimg.com/vi/${p.shortcode.replace(/^yt-/, "")}/hqdefault.jpg`;
+  return { caption, thumb, author };
+}
+
+// Generic pages carry their recipe as schema.org JSON-LD — when present we can skip AI entirely.
+type PageMeta = Meta & { ldCard: (Card & { source_url: string | null }) | null };
+
+async function webMeta(p: Parsed): Promise<PageMeta> {
+  const out: PageMeta = { caption: null, thumb: null, author: null, ldCard: null };
+  try {
+    const r = await fetch(p.clean, {
+      headers: { "User-Agent": DESKTOP_UA, "Accept-Language": "en-US", "Accept": "text/html" },
+      signal: AbortSignal.timeout(15000),
+    });
+    if (!r.ok) { console.error("webMeta fetch", p.clean, r.status); return out; }
+    const html = await r.text();
+    out.thumb = metaTag(html, "og:image");
+    out.author = metaTag(html, "og:site_name");
+    if (!out.author) { try { out.author = new URL(p.clean).hostname.replace(/^www\./, ""); } catch (_) { /* ok */ } }
+    const ogTitle = metaTag(html, "og:title") ??
+      (html.match(/<title[^>]*>([^<]*)<\/title>/i)?.[1]?.trim() ?? null);
+    const ogDesc = metaTag(html, "og:description");
+    out.caption = [ogTitle, ogDesc].filter(Boolean).join("\n") || null;
+
+    const recs = parseLdRecipes(html).filter((rec) => plausibleRecipe(rec.ingredients, rec.steps));
+    if (recs.length === 1) {
+      const rec = recs[0];
+      const t = cleanTitle(rec.name ?? ogTitle ?? "") || "Saved recipe";
+      out.ldCard = {
+        title: t,
+        category: catFor(t) ?? catFor(out.caption ?? "") ?? "Other",
+        cuisine: rec.cuisine ?? cuisineFor(t),
+        ingredients: rec.ingredients.slice(0, 60),
+        steps: splitLongSteps(rec.steps),
+        tags: [],
+        has_full_recipe: rec.ingredients.length >= 3 && rec.steps.length >= 2,
+        source_url: p.clean,
+      };
+    } else if (recs.length > 1) {
+      // several real recipes on one page (a meal-prep post) → one Meal Prep card
+      out.ldCard = {
+        title: cleanTitle(ogTitle ?? "") || "Meal prep recipes",
+        category: "Meal Prep", cuisine: null,
+        ingredients: [], steps: [], tags: [], has_full_recipe: true,
+        sub_recipes: recs.slice(0, 12).map((rec, i) => ({
+          title: cleanTitle(rec.name ?? "Recipe " + (i + 1)),
+          ingredients: rec.ingredients.slice(0, 60),
+          steps: splitLongSteps(rec.steps),
+        })),
+        source_url: p.clean,
+      };
+    } else {
+      // no structured recipe — hand the page text to the AI extractor
+      const body = html
+        .replace(/<script[\s\S]*?<\/script>/gi, " ")
+        .replace(/<style[\s\S]*?<\/style>/gi, " ")
+        .replace(/<[^>]+>/g, "\n");
+      const text = decodeEntities(body)
+        .replace(/[ \t]+/g, " ").replace(/\s*\n\s*/g, "\n").replace(/\n{3,}/g, "\n\n").trim();
+      if (text.length > 200) out.caption = ((out.caption ?? "") + "\n\n" + text.slice(0, 6000)).trim();
+    }
+  } catch (e) {
+    console.error("webMeta failed", e);
+  }
+  return out;
+}
+
+function fetchMeta(p: Parsed): Promise<Meta | PageMeta> {
+  if (p.platform === "instagram") return igMeta(p);
+  if (p.platform === "tiktok") return ttMeta(p);
+  if (p.platform === "youtube") return ytMeta(p);
+  return webMeta(p);
 }
 
 // ---------- Claude: caption -> recipe card ----------
@@ -929,11 +1064,15 @@ async function generateSteps(title: string, ingredients: string[], caption: stri
   } catch { return null; }
 }
 
-async function buildCard(meta: Meta, platform: string, kind = "reel"): Promise<{ card: Card; sourceUrl: string | null }> {
-  const card = await extractCard(meta.caption, meta.author, platform);
-  let sourceUrl: string | null = null;
+async function buildCard(
+  meta: Meta, platform: string, kind = "reel",
+  preCard: (Card & { source_url?: string | null }) | null = null,
+): Promise<{ card: Card; sourceUrl: string | null }> {
+  // a page that carried its own JSON-LD recipe skips extraction and the web hunt entirely
+  const card = preCard ?? await extractCard(meta.caption, meta.author, platform);
+  let sourceUrl: string | null = preCard ? (preCard.source_url ?? null) : null;
   // Caption gave us (nearly) nothing — read the post image, or hunt the recipe down on the web.
-  if (!card.has_full_recipe && card.ingredients.length < 3 && !(card.sub_recipes ?? []).length) {
+  if (!preCard && !card.has_full_recipe && card.ingredients.length < 3 && !(card.sub_recipes ?? []).length) {
     // try every carousel slide (recipe cards are often on photo 2 or 3);
     // several slides with recipes become one Meal Prep card
     const slides = (meta.images?.length ? meta.images : (meta.thumb ? [meta.thumb] : [])).slice(0, 4);
@@ -986,7 +1125,7 @@ async function buildCard(meta: Meta, platform: string, kind = "reel"): Promise<{
     }
   }
   // caption had the ingredients but no method ("full recipe in video") — fetch just the steps
-  if (!(card.sub_recipes ?? []).length && card.ingredients.length >= 3 && card.steps.length === 0) {
+  if (!preCard && !(card.sub_recipes ?? []).length && card.ingredients.length >= 3 && card.steps.length === 0) {
     const web = await findRecipeViaSearch(card.title, meta.caption, meta.author).catch(() => null);
     if (web && (web as Card & { confident?: boolean }).confident !== false &&
         web.steps.length >= 2 && !(web.sub_recipes ?? []).length) {
@@ -1108,7 +1247,7 @@ async function handleIngest(req: Request): Promise<Response> {
 
   const parsed = await resolveShare(shared);
   if (!parsed) {
-    return json({ status: "error", message: "No Instagram/TikTok link found in what was shared." });
+    return json({ status: "error", message: "No recipe link found in what was shared." });
   }
 
   const existing = await dbSelect(`shortcode=eq.${encodeURIComponent(parsed.shortcode)}&select=id,title,category`);
@@ -1119,8 +1258,10 @@ async function handleIngest(req: Request): Promise<Response> {
     });
   }
 
-  const meta = parsed.platform === "instagram" ? await igMeta(parsed) : await ttMeta(parsed);
-  const { card, sourceUrl } = await buildCard(meta, parsed.platform, parsed.kind);
+  const meta = await fetchMeta(parsed);
+  const { card, sourceUrl } = await buildCard(
+    meta, parsed.platform, parsed.kind, (meta as PageMeta).ldCard ?? null,
+  );
   const thumb = await storeThumb(parsed.shortcode, meta.thumb);
 
   const row = await dbInsert({
@@ -1138,7 +1279,7 @@ async function handleIngest(req: Request): Promise<Response> {
     steps: card.steps,
     tags: card.tags,
     has_full_recipe: card.has_full_recipe,
-    source_url: sourceUrl,
+    source_url: sourceUrl ?? (parsed.platform === "web" ? parsed.clean : null),
     sub_recipes: card.sub_recipes ?? [],
   });
 
@@ -1298,11 +1439,13 @@ Deno.serve(async (req) => {
           kind: row.kind ?? "reel",
           clean: row.url,
         };
-        const meta = parsed.platform === "instagram" ? await igMeta(parsed) : await ttMeta(parsed);
+        const meta = await fetchMeta(parsed);
         if (!meta.caption && row.caption) meta.caption = row.caption; // scraping can be flaky; keep what we had
         if (!meta.author && row.author) meta.author = row.author;
         if (!meta.thumb && row.thumb_url) meta.thumb = row.thumb_url; // reuse cached image for picture-recipes
-        const { card, sourceUrl } = await buildCard(meta, parsed.platform, parsed.kind);
+        const { card, sourceUrl } = await buildCard(
+          meta, parsed.platform, parsed.kind, (meta as PageMeta).ldCard ?? null,
+        );
         // a re-run must never downgrade: keep the old title if the new one is much longer,
         // the old category if the new run only managed "Other", and the old recipe data
         // if the new run (e.g. during AI quota exhaustion) came back empty-handed
@@ -1343,7 +1486,10 @@ Deno.serve(async (req) => {
           card.sub_recipes = row.sub_recipes ?? [];
           card.has_full_recipe = row.has_full_recipe ?? false;
         }
-        const newSrc = sourceUrl ?? ((newEmpty && oldHad) ? (row.source_url ?? null) : null);
+        const newSrc = sourceUrl ??
+          (row.platform === "web"
+            ? (row.source_url ?? row.url)   // a web save's source is the page itself — never drop it
+            : ((newEmpty && oldHad) ? (row.source_url ?? null) : null));
         const patch = {
           title: card.title,
           caption: meta.caption,

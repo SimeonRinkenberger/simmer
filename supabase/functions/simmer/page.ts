@@ -119,7 +119,10 @@ export const PAGE_HTML = String.raw`<!DOCTYPE html>
   .dcontent { padding: 16px 16px 60px; max-width: 720px; margin: 0 auto; }
   .videowrap { border-radius: 18px; overflow: hidden; background: #000; box-shadow: var(--shadow);
     aspect-ratio: 9 / 14; max-height: 62vh; margin: 0 auto; }
+  .videowrap.wide { aspect-ratio: 16 / 9; max-height: 40vh; }
   .videowrap iframe { width: 100%; height: 100%; border: 0; display: block; }
+  .webimgwrap { border-radius: 18px; overflow: hidden; box-shadow: var(--shadow); max-height: 46vh; }
+  .webimgwrap img { width: 100%; max-height: 46vh; object-fit: cover; display: block; }
   .dtitlerow { display: flex; align-items: flex-start; gap: 8px; margin-top: 16px; }
   .dtitle { font-family: var(--serif); font-size: 25px; font-weight: 700; letter-spacing: .1px; line-height: 1.22; margin: 0; flex: 1; }
   .editbtn { border: none; background: none; color: var(--muted); font-size: 15px; padding: 4px; }
@@ -267,8 +270,8 @@ export const PAGE_HTML = String.raw`<!DOCTYPE html>
 <div class="sheet" id="addsheet">
   <div class="sheetbody">
     <h2>Add a recipe</h2>
-    <p>Paste an Instagram or TikTok link.</p>
-    <input class="urlinput" id="urlinput" type="url" placeholder="https://www.instagram.com/reel/…" autocapitalize="off" autocorrect="off">
+    <p>Paste any link — Instagram, TikTok, YouTube, Pinterest, or a recipe website.</p>
+    <input class="urlinput" id="urlinput" type="url" placeholder="https://…" autocapitalize="off" autocorrect="off">
     <button class="primary" id="savebtn">Save recipe</button>
   </div>
 </div>
@@ -430,6 +433,7 @@ export const PAGE_HTML = String.raw`<!DOCTYPE html>
   // ---------- detail ----------
   function embedSrc(r) {
     if (r.platform === "tiktok") return "https://www.tiktok.com/embed/v2/" + String(r.shortcode).replace(/^tt-/, "");
+    if (r.platform === "youtube") return "https://www.youtube.com/embed/" + String(r.shortcode).replace(/^yt-/, "");
     return r.url.replace(/\/+$/, "") + "/embed/";
   }
 
@@ -467,14 +471,26 @@ export const PAGE_HTML = String.raw`<!DOCTYPE html>
 
     var c = el("div", "dcontent");
 
-    var vw = el("div", "videowrap");
-    var ifr = document.createElement("iframe");
-    ifr.src = embedSrc(r);
-    ifr.setAttribute("allowfullscreen", "");
-    ifr.setAttribute("allow", "autoplay; encrypted-media; picture-in-picture");
-    ifr.setAttribute("scrolling", "no");
-    vw.appendChild(ifr);
-    c.appendChild(vw);
+    if (r.platform === "web") {
+      // saved web pages have no video — show the cached page image instead
+      if (r.thumb_url) {
+        var ww = el("div", "webimgwrap");
+        var wimg = document.createElement("img");
+        wimg.src = r.thumb_url; wimg.alt = "";
+        wimg.onerror = function () { ww.remove(); };
+        ww.appendChild(wimg);
+        c.appendChild(ww);
+      }
+    } else {
+      var vw = el("div", "videowrap" + (r.platform === "youtube" ? " wide" : ""));
+      var ifr = document.createElement("iframe");
+      ifr.src = embedSrc(r);
+      ifr.setAttribute("allowfullscreen", "");
+      ifr.setAttribute("allow", "autoplay; encrypted-media; picture-in-picture");
+      ifr.setAttribute("scrolling", "no");
+      vw.appendChild(ifr);
+      c.appendChild(vw);
+    }
 
     var tr = el("div", "dtitlerow");
     var h = el("h2", "dtitle", r.title || "Untitled");
@@ -503,7 +519,7 @@ export const PAGE_HTML = String.raw`<!DOCTYPE html>
     };
     mr.appendChild(sel);
     if (r.cuisine) mr.appendChild(el("span", "mchip", r.cuisine));
-    if (r.source_url) {
+    if (r.source_url && r.source_url !== r.url) {
       var src = document.createElement("a");
       src.className = "mchip link"; src.href = r.source_url; src.target = "_blank"; src.rel = "noopener";
       var host = "recipe source";
@@ -513,7 +529,10 @@ export const PAGE_HTML = String.raw`<!DOCTYPE html>
     }
     var link = document.createElement("a");
     link.className = "mchip link"; link.href = r.url; link.target = "_blank"; link.rel = "noopener";
-    link.textContent = (r.platform === "tiktok" ? "Open in TikTok" : "Open in Instagram") + " ↗";
+    link.textContent = (r.platform === "tiktok" ? "Open in TikTok ↗"
+      : r.platform === "youtube" ? "Open on YouTube ↗"
+      : r.platform === "web" ? "Open original ↗"
+      : "Open in Instagram ↗");
     mr.appendChild(link);
     c.appendChild(mr);
 
@@ -610,8 +629,10 @@ export const PAGE_HTML = String.raw`<!DOCTYPE html>
     } else {
       var nb = el("div", "section");
       nb.appendChild(el("div", "norecipe",
-        "No written recipe in this video's caption — watch the video above, tap ↻ up top to search again, or open it on " +
-        (r.platform === "tiktok" ? "TikTok" : "Instagram") + " for details."));
+        r.platform === "web"
+          ? "No written recipe found on that page — tap ↻ up top to try again, or tap Open original to view the page."
+          : "No written recipe in this video's caption — watch the video above, tap ↻ up top to search again, or open it on " +
+            (r.platform === "tiktok" ? "TikTok" : r.platform === "youtube" ? "YouTube" : "Instagram") + " for details."));
       c.appendChild(nb);
     }
 
