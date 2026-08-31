@@ -238,11 +238,11 @@
     letter-spacing: -.022em; display: flex; align-items: center; gap: 12px; }
   .subhead::after { content: ""; flex: 1; height: 1px; background: var(--line-2); }
 
-  .ing { display: flex; align-items: flex-start; gap: 11px; padding: 11px 0;
+  .ing { display: flex; align-items: flex-start; gap: 9px; padding: 11px 0;
     border-bottom: 1px solid var(--line); font-size: 15px; }
   .ing:last-child { border-bottom: none; padding-bottom: 0; }
-  .ing input { -webkit-appearance: none; appearance: none; width: 21px; height: 21px; flex: 0 0 21px;
-    border-radius: 7px; border: 1.5px solid var(--line-2); background: transparent; margin: 1px 0 0;
+  .ing input { -webkit-appearance: none; appearance: none; width: 22px; height: 22px; flex: 0 0 22px;
+    border-radius: 999px; border: 1.5px solid var(--line-2); background: transparent; margin: 1px 0 0;
     position: relative; display: block;
     transition: background-color var(--t-1), border-color var(--t-1), transform var(--t-1) var(--e-out); }
   .ing input:checked { background: var(--ember); border-color: var(--ember); }
@@ -253,12 +253,11 @@
   .qty { font-weight: 700; color: var(--ink); }
   .ing.done label { text-decoration: line-through; color: var(--muted); }
   .ing.done .qty { color: var(--muted); }
-  .cartbtn { border: none; background: var(--sand); color: var(--ink-2); border-radius: 10px;
-    width: 30px; height: 30px; font-size: 14px; font-weight: 700; flex: 0 0 30px; line-height: 1;
+  .cartbtn { border: none; background: var(--sand); color: var(--ink-2); border-radius: 999px;
+    width: 29px; height: 29px; font-size: 15px; font-weight: 700; flex: 0 0 29px; line-height: 1;
     display: inline-flex; align-items: center; justify-content: center;
     transition: transform var(--t-1) var(--e-out), background-color var(--t-2), color var(--t-2); }
   .cartbtn:not(.convbtn) { background: var(--ember-soft); color: var(--ember-ink); font-size: 17px; }
-  .cartbtn.convbtn { background: transparent; color: var(--ink-2); font-size: 16px; opacity: .6; }
   .cartbtn:disabled { opacity: .45; }
 
   .steps { padding-left: 0; margin: 0; counter-reset: st; list-style: none; }
@@ -411,7 +410,6 @@
   /* ---------- convert + substitute ---------- */
   /* Colour emoji fight the warm palette; these two are the only strongly blue ones. */
   .emojibtn { filter: grayscale(1); opacity: .85; }
-  .convbtn { font-size: 13px; }
   .convrow { display: flex; align-items: baseline; gap: 12px; padding: 13px 2px;
     border-bottom: 1px solid var(--line); }
   .convrow:last-of-type { border-bottom: none; }
