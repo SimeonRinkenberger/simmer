@@ -487,10 +487,61 @@ function normalizeItem(text: string): string {
   let s = text.toLowerCase();
   s = s.replace(/\(.*?\)/g, " ");            // "(28 ounce)"
   s = s.split(/,| - | – |;/)[0];             // ", sliced"
-  const UNITS = "cups?|tbsps?|tablespoons?|tsps?|teaspoons?|grams?|g|kg|ml|l|liters?|oz|ounces?|lbs?|pounds?|cloves?|cans?|sticks?|slices?|pieces?|pinch(?:es)?|dash(?:es)?|handfuls?|scoops?|packages?|pkgs?|containers?|jars?|bottles?|bunch(?:es)?|heads?|stalks?|sprigs?|large|medium|small|extra[- ]large";
+  // longer unit tokens must come before their single-letter prefixes ("lbs" before "l")
+  const UNITS = "cups?|tbsps?|tablespoons?|tsps?|teaspoons?|grams?|kg|ml|liters?|lbs?|pounds?|oz|ounces?|cloves?|cans?|sticks?|slices?|pieces?|pinch(?:es)?|dash(?:es)?|handfuls?|scoops?|packages?|pkgs?|containers?|jars?|bottles?|bunch(?:es)?|heads?|stalks?|sprigs?|large|medium|small|extra[- ]large|g|l";
   s = s.replace(new RegExp("^(?:(?:about|approx\\.?|roughly|heaping|scant)\\s+)?[\\d\\s/.,-]*\\s*(?:" + UNITS + ")?\\s*(?:of\\s+)?", "i"), "");
   s = s.replace(/[\d/]+/g, " ").replace(/\bto taste\b/g, "").replace(/\s{2,}/g, " ").trim();
   return s || text.toLowerCase().trim();
+}
+
+// ---------- grocery aisle classification ----------
+
+const AISLES = ["Produce", "Meat & Seafood", "Dairy & Eggs", "Bakery", "Pantry", "Spices & Baking", "Frozen", "Other"];
+
+// Order matters: compound/qualified names must win before their generic parts
+// ("chicken broth" → Pantry, "frozen peas" → Frozen, "bread flour" → Spices & Baking).
+const AISLE_RULES: Array<[string, RegExp]> = [
+  ["Frozen", /\b(frozen|ice ?cream|popsicles?|freezer|puff pastry)\b/],
+  ["Pantry", /\b(broth|stock|bouillon)\b/],
+  ["Pantry", /\b(coconut|almond|oat|soy|rice|cashew) (milk|cream)\b/],
+  ["Pantry", /\b(peanut|almond|cashew|nut) butter\b/],
+  ["Pantry", /\b(bread ?crumbs?|panko|croutons?|canned|jarred|evaporated milk|condensed milk)\b/],
+  ["Spices & Baking", /\b(spices?|salt|peppercorns?|black pepper|white pepper|paprika|cumin|coriander|turmeric|cinnamon|nutmeg|cloves? ground|allspice|cardamom|dried \w+|oregano|thyme|rosemary|sage|bay lea(f|ves)|chili powder|chilli powder|cayenne|curry powder|garam masala|italian seasoning|taco seasoning|cajun|old bay|onion powder|garlic powder|red pepper flakes?|za.?atar|sumac|seasoning|msg|vanilla|baking soda|baking powder|yeast|corn ?starch|cocoa|chocolate( chips?| chunks?)?|powdered sugar|icing sugar|confectioners|brown sugar|sugar|flour|cake mix|food colou?ring|sprinkles|extract|molasses|shortening|cream of tartar|gelatin|espresso powder|sweetener|stevia|erythritol|monk ?fruit)\b/],
+  ["Bakery", /\b(bread|baguette|ciabatta|sourdough|rolls?|buns?|tortillas?|pitas?|naan|bagels?|croissants?|english muffins?|brioche|flatbread|wraps?|donuts?|doughnuts?|pastry|pie crust)\b/],
+  ["Dairy & Eggs", /\b(milk|buttermilk|heavy cream|whipping cream|half.and.half|half & half|creamer|sour cream|yogurt|yoghurt|butter|ghee|margarine|cheese|cheddar|mozzarella|parmesan|parmigiano|feta|ricotta|cottage cheese|goat cheese|cream cheese|mascarpone|swiss|provolone|monterey|pepper jack|gouda|brie|blue cheese|gorgonzola|halloumi|queso|crema|eggs?|egg whites?|whipped cream)\b/],
+  ["Meat & Seafood", /\b(chicken|beef|steaks?|sirloin|ribeye|chuck|brisket|short ribs?|pork|tenderloin|bacon|ham|sausages?|chorizo|turkey|lamb|veal|meat|mince|salmon|tuna|shrimp|prawns?|cod|tilapia|halibut|mahi|trout|snapper|crab|lobster|scallops?|mussels?|clams?|anchov|sardines?|fish|hot ?dogs?|meatballs?|deli|pepperoni|salami|prosciutto|pancetta|ribs?|wings?|drumsticks?|thighs?)\b/],
+  ["Produce", /\b(onions?|shallots?|garlic|ginger|tomato(es)?|potato(es)?|carrots?|celery|bell peppers?|jalapen|serrano|poblano|habanero|chil[ie]s?|(bell|sweet|red|green|yellow|orange) peppers?|cucumbers?|zucchini|courgette|squash|butternut|pumpkin|lettuce|romaine|spinach|kale|arugula|cabbage|broccoli|cauliflower|brussels?|asparagus|green beans|snap peas|peas|corn|mushrooms?|avocados?|lemons?|limes?|oranges?|apples?|bananas?|berr(y|ies)|strawberr|blueberr|raspberr|blackberr|grapes?|mango(es)?|pineapple|peach(es)?|pears?|plums?|kiwis?|melons?|watermelon|cantaloupe|pomegranate|cilantro|coriander leaves|parsley|mint|chives|basil|dill|green onions?|scallions?|spring onions?|leeks?|radish(es)?|beets?|turnips?|eggplant|aubergine|okra|bok choy|sprouts|salad|coleslaw|slaw mix|herbs?|edamame|fennel|artichokes?|microgreens|lemongrass)\b/],
+  ["Pantry", /\b(pasta|spaghetti|penne|macaroni|fettuccine|linguine|rigatoni|orzo|lasagn[ae]|noodles?|ramen|rice|quinoa|couscous|farro|barley|lentils?|beans?|chickpeas?|garbanzo|black beans|kidney beans|pinto|cannellini|oats|oatmeal|cereal|granola|crackers|chips|tortilla chips|popcorn|pretzels|oil|olive oil|vinegar|balsamic|soy sauce|tamari|fish sauce|worcestershire|hot sauce|sriracha|ketchup|mustard|mayo(nnaise)?|bbq sauce|salsa|tomato (sauce|paste|puree)|crushed tomatoes|diced tomatoes|marinara|passata|pesto|honey|maple syrup|agave|jam|jelly|preserves|peanuts?|almonds?|cashews?|walnuts?|pecans?|pistachios?|macadamia|pine nuts|seeds?|chia|flax|hemp|tahini|olives?|capers|pickles?|relish|artichoke hearts|sun.?dried|raisins?|dates?|dried (fruit|cranberries|apricots)|coconut|protein powder|collagen|curry paste|gochujang|miso|hoisin|oyster sauce|rice vinegar|mirin|sesame oil|cooking (wine|sherry)|wine|tortilla|graham|marshmallows?|applesauce|salsa verde|enchilada sauce|coconut water|juice|soda|sparkling)\b/],
+  // late catch-alls, after the specific produce/pantry names above have had their chance
+  ["Spices & Baking", /\bpepper\b/],
+  ["Dairy & Eggs", /\bcream\b/],
+];
+
+function aisleFor(item: string): string | null {
+  const t = item.toLowerCase();
+  for (const [aisle, re] of AISLE_RULES) if (re.test(t)) return aisle;
+  return null;
+}
+
+// One batched AI call for whatever the keyword map didn't recognize.
+async function aisleForBatch(names: string[]): Promise<Record<string, string>> {
+  const out: Record<string, string> = {};
+  if (!names.length) return out;
+  try {
+    const system =
+      `You sort grocery items into supermarket aisles. Reply with ONLY a JSON object mapping each ` +
+      `item name EXACTLY as given to one of ${JSON.stringify(AISLES)}. Use "Other" when unsure.`;
+    const text = await textGenerate(system, "Items:\n" + names.slice(0, 60).join("\n"), true);
+    if (text) {
+      const raw = parseJsonLoose(text);
+      for (const [k, v] of Object.entries(raw)) {
+        if (typeof v === "string" && AISLES.includes(v)) out[k.toLowerCase()] = v;
+      }
+    }
+  } catch (e) {
+    console.error("aisle batch classify failed", e);
+  }
+  return out;
 }
 
 function catFor(text: string): string | null {
@@ -1337,18 +1388,40 @@ Deno.serve(async (req) => {
         if (req.method === "GET") {
           const r = await fetch(`${GREST}?select=*&order=created_at.asc`, { headers: dbHeaders });
           if (!r.ok) throw new Error(await r.text());
-          return json(await r.json());
+          const rows = await r.json();
+          // items saved before the aisle column existed: classify by keyword and patch once
+          const fixes: Record<string, string[]> = {};
+          for (const row of rows) {
+            if (row.aisle) continue;
+            const a = aisleFor(row.item ?? "");
+            if (a) { row.aisle = a; (fixes[a] = fixes[a] ?? []).push(row.id); }
+          }
+          await Promise.all(Object.entries(fixes).map(([aisle, ids]) =>
+            fetch(`${GREST}?id=in.(${ids.join(",")})`, {
+              method: "PATCH", headers: dbHeaders, body: JSON.stringify({ aisle }),
+            }).then((pr) => pr.body?.cancel()).catch((e) => console.error("aisle backfill failed", e))));
+          return json(rows);
         }
         if (req.method === "POST") {
           const body = await req.json().catch(() => ({}));
           const items = Array.isArray(body.items) ? body.items : [];
-          const rows = items.slice(0, 100).map((it: Record<string, unknown>) => ({
-            text: String(it.text ?? "").slice(0, 200),
-            item: normalizeItem(String(it.text ?? "")),
-            recipe_id: typeof it.recipe_id === "string" && /^[0-9a-f-]{36}$/.test(it.recipe_id) ? it.recipe_id : null,
-            recipe_title: it.recipe_title ? String(it.recipe_title).slice(0, 120) : null,
-          })).filter((r: { text: string }) => r.text);
+          const rows = items.slice(0, 100).map((it: Record<string, unknown>) => {
+            const text = String(it.text ?? "").slice(0, 200);
+            const item = normalizeItem(text);
+            return {
+              text,
+              item,
+              aisle: aisleFor(item),
+              recipe_id: typeof it.recipe_id === "string" && /^[0-9a-f-]{36}$/.test(it.recipe_id) ? it.recipe_id : null,
+              recipe_title: it.recipe_title ? String(it.recipe_title).slice(0, 120) : null,
+            };
+          }).filter((r: { text: string }) => r.text);
           if (!rows.length) return json({ status: "error", message: "No items." });
+          const unknown = [...new Set(rows.filter((r: { aisle: string | null }) => !r.aisle).map((r: { item: string }) => r.item))] as string[];
+          if (unknown.length) {
+            const ai = await aisleForBatch(unknown);
+            for (const row of rows) if (!row.aisle) row.aisle = ai[row.item.toLowerCase()] ?? "Other";
+          }
           const ir = await fetch(GREST, {
             method: "POST",
             headers: { ...dbHeaders, prefer: "return=representation" },

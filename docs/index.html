@@ -187,7 +187,17 @@
   .badge.show { display: inline-block; }
 
   .gwrap { padding: 14px 16px; max-width: 720px; margin: 0 auto; }
-  .gactions { display: flex; justify-content: flex-end; margin-bottom: 8px; }
+  .gactions { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; gap: 8px; }
+  .gviews { display: flex; gap: 6px; }
+  .gview { border: 1px solid var(--line); background: var(--card); color: var(--text); border-radius: 999px;
+    padding: 7px 13px; font-size: 13px; font-weight: 600;
+    transition: background-color .2s, color .2s, border-color .2s, transform .15s; }
+  .gview:active { transform: scale(.94); }
+  .gview.active { background: var(--blue); border-color: var(--blue); color: #fff; }
+  .gaisle { font-family: var(--serif); font-size: 17px; font-weight: 700; margin: 18px 0 2px;
+    padding-bottom: 6px; border-bottom: 2px solid var(--line); }
+  .gaisle:first-child { margin-top: 4px; }
+  .gaisle .n { color: var(--muted); font-size: 12.5px; font-weight: 600; font-family: -apple-system, BlinkMacSystemFont, sans-serif; margin-left: 6px; }
   .gclear { border: 1px solid var(--line); background: var(--card); color: var(--muted); border-radius: 999px;
     padding: 7px 13px; font-size: 13px; font-weight: 600; }
   .grow { display: flex; align-items: flex-start; gap: 12px; padding: 12px 4px; border-bottom: 1px solid var(--line); }
@@ -300,7 +310,13 @@
 </div>
 
 <div id="groceryview" class="gwrap" style="display:none">
-  <div class="gactions"><button class="gclear" id="gclear">Clear checked</button></div>
+  <div class="gactions">
+    <div class="gviews">
+      <button class="gview" id="gv-aisle">By aisle</button>
+      <button class="gview" id="gv-recipe">By recipe</button>
+    </div>
+    <button class="gclear" id="gclear">Clear checked</button>
+  </div>
   <div id="glist"></div>
   <div class="gempty" id="gempty" style="display:none">
     <div class="big">🛒</div>
@@ -381,7 +397,8 @@
   var KEY = params.get("key") || localStorage.getItem("simmer_key") || "";
   if (params.get("key")) localStorage.setItem("simmer_key", params.get("key"));
 
-  var state = { recipes: [], cat: "All", q: "", grocery: [], view: "recipes", madeStars: 0 };
+  var state = { recipes: [], cat: "All", q: "", grocery: [], view: "recipes", madeStars: 0,
+    gview: (function () { try { return localStorage.getItem("simmer_gview") || "aisle"; } catch (e) { return "aisle"; } })() };
   var $ = function (id) { return document.getElementById(id); };
 
   var API_BASE = "https://mfxaogzzegwkscamarre.supabase.co/functions/v1/simmer/api/";
@@ -1199,6 +1216,30 @@
     });
   }
 
+  var AISLE_ORDER = ["Produce", "Meat & Seafood", "Dairy & Eggs", "Bakery", "Pantry", "Spices & Baking", "Frozen", "Other"];
+  var AISLE_EMOJI = { "Produce": "🥬", "Meat & Seafood": "🥩", "Dairy & Eggs": "🥚", "Bakery": "🥖",
+    "Pantry": "🥫", "Spices & Baking": "🧂", "Frozen": "🧊", "Other": "🛒" };
+
+  function groceryRow(g) {
+    var row = el("div", "grow" + (g.done ? " done" : ""));
+    var cb = el("div", "gcheck", g.done ? "✓" : "");
+    var body = el("div", null); body.style.flex = "1";
+    body.appendChild(el("div", "gname", g.name));
+    var subs = g.rows.map(function (r) {
+      return r.text + (r.recipe_title ? " — " + r.recipe_title : "");
+    });
+    body.appendChild(el("div", "gsub", subs.join(" · ")));
+    row.appendChild(cb); row.appendChild(body);
+    row.onclick = function () {
+      var ids = g.rows.map(function (r) { return r.id; });
+      var target = !g.done;
+      g.rows.forEach(function (r) { r.checked = target; });
+      renderGrocery();
+      api("grocery", { method: "PATCH", body: JSON.stringify({ ids: ids, checked: target }) }).catch(function () {});
+    };
+    return row;
+  }
+
   function renderGrocery() {
     var groups = groceryGroups();
     var open = groups.filter(function (g) { return !g.done; });
@@ -1208,26 +1249,42 @@
     var badge = $("gbadge");
     badge.textContent = String(open.length);
     badge.classList.toggle("show", open.length > 0);
-    open.concat(done).forEach(function (g) {
-      var row = el("div", "grow" + (g.done ? " done" : ""));
-      var cb = el("div", "gcheck", g.done ? "✓" : "");
-      var body = el("div", null); body.style.flex = "1";
-      body.appendChild(el("div", "gname", g.name));
-      var subs = g.rows.map(function (r) {
-        return r.text + (r.recipe_title ? " — " + r.recipe_title : "");
+    $("gv-aisle").classList.toggle("active", state.gview === "aisle");
+    $("gv-recipe").classList.toggle("active", state.gview !== "aisle");
+    if (state.gview === "aisle") {
+      var byAisle = {};
+      groups.forEach(function (g) {
+        var a = null;
+        for (var i = 0; i < g.rows.length && !a; i++) a = g.rows[i].aisle;
+        if (AISLE_ORDER.indexOf(a) < 0) a = "Other";
+        (byAisle[a] = byAisle[a] || []).push(g);
       });
-      body.appendChild(el("div", "gsub", subs.join(" · ")));
-      row.appendChild(cb); row.appendChild(body);
-      row.onclick = function () {
-        var ids = g.rows.map(function (r) { return r.id; });
-        var target = !g.done;
-        g.rows.forEach(function (r) { r.checked = target; });
-        renderGrocery();
-        api("grocery", { method: "PATCH", body: JSON.stringify({ ids: ids, checked: target }) }).catch(function () {});
-      };
-      list.appendChild(row);
-    });
+      AISLE_ORDER.forEach(function (a) {
+        var gs = byAisle[a];
+        if (!gs || !gs.length) return;
+        var head = el("div", "gaisle", AISLE_EMOJI[a] + " " + a);
+        var openCount = gs.filter(function (g) { return !g.done; }).length;
+        if (openCount) head.appendChild(el("span", "n", String(openCount)));
+        list.appendChild(head);
+        gs.filter(function (g) { return !g.done; })
+          .concat(gs.filter(function (g) { return g.done; }))
+          .forEach(function (g) { list.appendChild(groceryRow(g)); });
+      });
+    } else {
+      open.concat(done).forEach(function (g) { list.appendChild(groceryRow(g)); });
+    }
   }
+
+  $("gv-aisle").onclick = function () {
+    state.gview = "aisle";
+    try { localStorage.setItem("simmer_gview", "aisle"); } catch (e) {}
+    renderGrocery();
+  };
+  $("gv-recipe").onclick = function () {
+    state.gview = "recipe";
+    try { localStorage.setItem("simmer_gview", "recipe"); } catch (e) {}
+    renderGrocery();
+  };
 
   function addToGrocery(texts, recipe) {
     var items = texts.map(function (t) {
