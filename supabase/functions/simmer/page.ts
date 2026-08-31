@@ -762,7 +762,7 @@ export const PAGE_HTML = String.raw`<!DOCTYPE html>
       return;
     }
     $("count").textContent = state.view === "made"
-      ? rows.length + " you have made"
+      ? rows.length + " recipe" + (rows.length === 1 ? "" : "s") + " made"
       : state.recipes.length
         ? state.recipes.length + " recipe" + (state.recipes.length === 1 ? "" : "s") + " saved"
         : "your recipe library";
