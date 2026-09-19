@@ -497,12 +497,25 @@ export const PAGE_HTML = String.raw`<!DOCTYPE html>
     transition: background-color var(--t-3) var(--e-soft), transform var(--t-3) var(--e-out); }
   .cookdot.on { background: var(--ember); }
   .cookdot.now { transform: scaleX(2.6); }
-  .cookstep { flex: 1; display: flex; align-items: center; justify-content: center;
-    padding: 16px 30px 26px; overflow-y: auto; cursor: pointer; position: relative; z-index: 1; }
+  .cookstep { flex: 1; display: flex; padding: 16px 26px 26px; overflow-y: auto; cursor: pointer;
+    position: relative; z-index: 1; }
+  /* margin:auto centres the block and, unlike align-items, still lets a tall step scroll */
+  .cookinner { margin: auto; width: 100%; max-width: 620px; }
   .cooktxt { font-family: var(--serif); font-size: 27px; line-height: 1.44; font-weight: 600;
     letter-spacing: -.018em; max-width: 620px; text-wrap: balance;
     animation: stepin .32s var(--e-out) both; }
   @keyframes stepin { from { opacity: 0; transform: translateY(12px); } }
+  /* ---------- "for this step": the measured ingredients this step calls for ---------- */
+  .cookuse { margin-top: 22px; background: var(--card); border: 1px solid var(--line); border-radius: 18px;
+    padding: 4px 16px 5px; box-shadow: var(--sh-sm); cursor: default;
+    animation: stepin .32s var(--e-out) .07s both; }
+  .cookuse .kick { display: flex; justify-content: space-between; align-items: baseline; gap: 10px;
+    padding: 10px 0 3px; font-size: 10.5px; font-weight: 700; letter-spacing: .18em;
+    text-transform: uppercase; color: var(--muted); }
+  .cookuse .kick .scale { color: var(--ember-ink); letter-spacing: .1em; }
+  .cookuse .row { padding: 9px 0; border-bottom: 1px solid var(--line); font-size: 15.5px; line-height: 1.42;
+    color: var(--ink-2); }
+  .cookuse .row:last-child { border-bottom: none; }
   .cookdone { text-align: center; }
   .cookdone .big { font-size: 66px; margin-bottom: 14px; animation: bounceonce .55s var(--e-out); }
   @keyframes bounceonce { 0% { transform: scale(.6); opacity: 0; } 60% { transform: scale(1.12); } 100% { transform: scale(1); opacity: 1; } }
@@ -996,6 +1009,207 @@ export const PAGE_HTML = String.raw`<!DOCTYPE html>
     return !!canonUnit(rest);
   }
 
+  // ---------- which ingredients does this step use? ----------
+  // Deterministic, no AI. Steps name ingredients by quantity ("Chop 6 tbsp sun-dried
+  // tomatoes"), by bare name ("add the brown sugar and granulated sugar"), or by
+  // component ("For the streusel, mix the flour…"). Each ingredient line is reduced to
+  // its content words; a step "uses" it when those words appear near each other.
+  // Stronger matches (complete phrase > head noun > more words) claim their words, so
+  // "salt and pepper" never drags in "bell peppers" and "onions" prefers the yellow
+  // onion over onion powder — while "both sugars" still shows both sugars. Duplicate
+  // names across components ("flour" in the dough AND the streusel) resolve to the
+  // component the step names, else the first one listed.
+  var ING_STOP = /^(the|a|an|of|and|or|to|for|with|in|into|on|at|as|plus|more|extra|optional|taste|divided|about|approx|roughly|your|my|i|some|if|needed|used|preferably|choice|chopped|diced|minced|sliced|shredded|crushed|melted|softened|browned|beaten|peeled|cubed|crumbled|toasted|cooked|mashed|packed|sifted|finely|thinly|freshly|room|temperature|temp|from|such|like|any|kind|type|brand|use|homemade|store|bought|cut|halved|quartered|trimmed|drained|rinsed|thawed|leftover|cold|hot|warm|lukewarm|boiling|serving|serve|garnish|topping|top|dusting|greasing|brushing)$/;
+  var ING_DESC = /^(brown|golden|light|dark|white|red|green|yellow|black|large|small|medium|fresh|dry|dried|wet|whole|ground|mixed|sweet|salted|unsalted|soft|hard|thick|thin|heavy|plain|pure|raw|ripe|big|baby|sea|kosher|flaky|fine|coarse|full|fat|low|reduced|free|organic|natural|good|quality|best|favorite|favourite|regular|instant|quick|old|fashioned|all|purpose|granulated|powdered|confectioners|icing|caster|superfine|virgin|olive|vegetable|canola|neutral|cooking|baking|frozen|canned|jarred|bottled|grated|smoked|sweetened|unsweetened|lean|boneless|skinless|italian|greek|mexican|asian|french|english|american|hot|mild|spicy)$/;
+  var ING_BRIDGE = /^(of|and|or|the|with)$/;
+  // "sesame seeds" is not the sesame oil; "chicken broth" is not the chicken
+  var ING_FORM = /^(seed|oil|powder|paste|sauce|juice|zest|extract|puree|purée|flake|chip|chunk|syrup|butter|milk|cream|cheese|broth|stock|vinegar|seasoning|leaf|leaves|peel|rind|dressing|glaze|jam|jelly)$/;
+  var ING_NUM_RE = new RegExp(NUM_TOK, "g");
+  var ING_UNITS = "cups?|tbsps?|tablespoons?|tsps?|teaspoons?|grams?|kg|ml|liters?|litres?|lbs?|pounds?|oz|ounces?|cloves?|cans?|sticks?|slices?|pieces?|pinch(?:es)?|dash(?:es)?|handfuls?|scoops?|packages?|packets?|pkgs?|containers?|jars?|bottles?|bunch(?:es)?|heads?|stalks?|sprigs?|large|medium|small|extra[- ]large|g|l";
+  var ING_LEAD_RE = new RegExp(
+    "^(?:(?:about|approx\\.?|roughly|heaping|scant|a|one)\\s+)?" +
+    "(?:(?:pinch|dash|handful|splash|drizzle|sprinkle|knob|squeeze|few|couple)(?:es)?\\s+(?:of\\s+)?)?" +
+    "(?:[\\d\\s/.,\\-–¼½¾⅓⅔⅛⅜⅝⅞⅙⅚⅕]+\\s*(?:(?:" + ING_UNITS + ")\\b\\.?)?\\s*(?:plus\\s+|and\\s+)?)*" +
+    "(?:of\\s+)?", "i");
+  function ingSingular(w) {
+    if (w.length < 4 || /(ss|us|is)$/.test(w) || /^(molasses|oats|grits|hummus|couscous|asparagus)$/.test(w)) return w;
+    if (/oes$/.test(w)) return w.slice(0, -2);
+    if (/ies$/.test(w)) return w.slice(0, -3) + "y";
+    if (/ves$/.test(w)) return w;
+    if (/[a-z]s$/.test(w)) return w.slice(0, -1);
+    return w;
+  }
+  function ingTokens(s) {
+    return String(s).toLowerCase().replace(/[’']/g, "").replace(/[^a-z]+/g, " ").trim().split(/\s+/)
+      .filter(function (w) { return w.length > 1; }).map(ingSingular);
+  }
+  // a header line like "Streusel:" or "For the icing" — no quantity, few words
+  function ingIsHeader(line) {
+    var s = String(line).trim();
+    if (/\d|[¼½¾⅓⅔⅛⅜⅝⅞⅙⅚⅕]/.test(s)) return false;
+    if (/:$/.test(s) && s.split(/\s+/).length <= 5) return true;
+    return /^for the\s+\S+/i.test(s) && s.split(/\s+/).length <= 5;
+  }
+  function ingHasMeasure(line) {
+    var s = String(line);
+    return /\d|[¼½¾⅓⅔⅛⅜⅝⅞⅙⅚⅕]/.test(s) ||
+      /^\s*(a\s+)?(pinch|dash|handful|splash|drizzle|sprinkle|knob|squeeze|few|couple)\b/i.test(s) ||
+      /\bto taste\b/i.test(s);
+  }
+  // ingredient lines → { items: [{i, text, words, distinct, head, section, measured}], sections }
+  function ingIndex(lines) {
+    var out = [], sections = [], sec = 0;
+    (lines || []).forEach(function (raw, i) {
+      var s = String(raw).replace(/^[\s•*▢☐\-–—]+/, "").trim();
+      if (!s) return;
+      if (ingIsHeader(s)) {
+        var name = s.replace(/^for the\s+/i, "").replace(/:$/, "");
+        sections.push({ id: sections.length + 1, name: name, words: ingTokens(name).filter(function (w) { return !ING_STOP.test(w); }) });
+        sec = sections.length;
+        return;
+      }
+      // "2 cups flour, sifted" → "flour"; but "boneless, skinless chicken breast" keeps going
+      var base = s.toLowerCase().replace(/\(.*?\)/g, " ");
+      function nameWords(str) {
+        str = str.replace(ING_LEAD_RE, "").replace(/[\d/¼½¾⅓⅔⅛⅜⅝⅞⅙⅚⅕]+/g, " ").replace(/\bto taste\b/g, " ");
+        return ingTokens(str).filter(function (w) { return !ING_STOP.test(w); });
+      }
+      var words = nameWords(base.split(/,| - | – |;| \+ /)[0]);
+      var distinct = words.filter(function (w) { return !ING_DESC.test(w); });
+      if (!distinct.length) { words = nameWords(base.split(/ - | – |;| \+ /)[0].replace(/,/g, " ")); distinct = words.filter(function (w) { return !ING_DESC.test(w); }); }
+      if (!words.length) return;
+      if (!distinct.length) distinct = words;
+      var qm = s.match(SCALE_RE), qty = (qm && qm[2]) ? qtyToNum(qm[2]) : null;
+      out.push({ i: i, text: s, words: words, distinct: distinct, head: words[words.length - 1],
+        section: sec, measured: ingHasMeasure(s), qty: qty });
+    });
+    return { items: out, sections: sections };
+  }
+  // step text → tokens plus "a comma/period sat before this token" flags
+  function stepTokens(text) {
+    var toks = [], brk = [], pending = true;
+    String(text).toLowerCase().replace(/[’']/g, "").split(/([^a-z]+)/).forEach(function (part) {
+      if (!part) return;
+      if (/^[^a-z]/.test(part)) { if (/[,.;:()\[\]!?\/&+]/.test(part)) pending = true; return; }
+      if (part.length < 2) return;
+      toks.push(ingSingular(part)); brk.push(pending); pending = false;
+    });
+    return { toks: toks, brk: brk };
+  }
+  // → the ingredient indexes one step uses, in the order the step mentions them
+  function stepIngredients(stepText, idx) {
+    stepText = String(stepText).replace(/\bsalt,\s*(?:and|&)\s+/gi, "salt and ");
+    var st = stepTokens(stepText), toks = st.toks, brk = st.brk;
+    if (!toks.length || !idx.items.length) return [];
+    var where = {};
+    toks.forEach(function (t, k) { (where[t] = where[t] || []).push(k); });
+    // "salt and pepper" is seasoning, not the bell peppers
+    var seasoning = /\bsalt\s*(?:and|&|,|\/)\s*(?:black |white |ground |cracked |freshly ground )?pepper\b|\bpepper\s+to\s+taste\b/i.test(stepText);
+    var named = {}, anyNamed = false;
+    idx.sections.forEach(function (sc) {
+      if (!sc.words.length) return;
+      var all = sc.words.every(function (w) { return w in where; });
+      if (all || (sc.words[sc.words.length - 1] in where)) { named[sc.id] = true; anyNamed = true; }
+    });
+    var wantsAll = anyNamed && ("ingredient" in where);
+    // quantities the step spells out ("2/3 cup Greek yogurt") pick between look-alike lines
+    var nums = {}, nm;
+    ING_NUM_RE.lastIndex = 0;
+    while ((nm = ING_NUM_RE.exec(stepText))) { var nv = qtyToNum(nm[0]); if (nv !== null) nums[Math.round(nv * 100)] = true; }
+    // words that belong to some other line: "pumpkin butter" is not the butter
+    var others = {};
+    idx.items.forEach(function (it) { it.distinct.forEach(function (w) { others[w] = (others[w] || 0) + 1; }); });
+    var rank = function (c) {
+      return (c.complete ? 4 : 0) + (c.head ? 2 : 0) + c.pos.length / (c.it.words.length + 1) -
+        (!c.head && ING_FORM.test(c.it.head) ? 0.5 : 0);   // "garlic" is the clove before the powder
+    };
+    var cands = [], extra = [];
+    idx.items.forEach(function (it) {
+      var n = it.words.length, mine = [];
+      // grow a contiguous phrase out from an anchor: "brown sugar" is two words only when
+      // "brown" sits right next to "sugar" in the step, with no comma between
+      function grow(k) {
+        var pos = [k], found = [toks[k]], j, w;
+        for (j = k - 1; j >= 0; j--) {
+          if (brk[j + 1]) break;
+          w = toks[j];
+          if (it.words.indexOf(w) >= 0 && found.indexOf(w) < 0) { found.push(w); pos.push(j); continue; }
+          if (ING_BRIDGE.test(w) && j > 0 && !brk[j] && it.words.indexOf(toks[j - 1]) >= 0 && found.indexOf(toks[j - 1]) < 0) continue;
+          break;
+        }
+        for (j = k + 1; j < toks.length; j++) {
+          if (brk[j]) break;
+          w = toks[j];
+          if (it.words.indexOf(w) >= 0 && found.indexOf(w) < 0) { found.push(w); pos.push(j); continue; }
+          if (ING_BRIDGE.test(w) && j + 1 < toks.length && !brk[j + 1] && it.words.indexOf(toks[j + 1]) >= 0 && found.indexOf(toks[j + 1]) < 0) continue;
+          break;
+        }
+        pos.sort(function (a, b) { return a - b; });
+        return { pos: pos, found: found };
+      }
+      it.distinct.forEach(function (d) {
+        if (!(d in where)) return;
+        if (seasoning && d === "pepper" && it.distinct.length > 1) return;
+        where[d].forEach(function (k) {
+          var g = grow(k), first = g.pos[0], last = g.pos[g.pos.length - 1];
+          if (mine.some(function (c) { return c.pos[0] === first; })) return;
+          var headHit = g.found.indexOf(it.head) >= 0;
+          // the phrase runs into a different form noun ("sesame seeds", "chicken broth") or
+          // hangs off another ingredient ("pumpkin butter", "honey butter"): not this line
+          var nxt = last + 1 < toks.length && !brk[last + 1] ? toks[last + 1] : null;
+          if (nxt && ING_FORM.test(nxt) && it.words.indexOf(nxt) < 0 && (!headHit || !ING_FORM.test(it.head))) return;
+          var prv = first > 0 && !brk[first] ? toks[first - 1] : null;
+          if (prv && others[prv] && it.words.indexOf(prv) < 0 && !ING_DESC.test(prv) && !ING_STOP.test(prv)) return;
+          mine.push({ it: it, pos: g.pos, complete: g.found.length === n, head: headHit, at: first,
+            qtyHit: it.qty !== null && !!nums[Math.round(it.qty * 100)] });
+        });
+      });
+      if (mine.length) cands = cands.concat(mine);
+      else if (wantsAll && named[it.section]) extra.push({ it: it, pos: [], at: 1e9, qtyHit: false });
+    });
+    // stronger matches claim the step words they sit on; equals never block each other,
+    // and a line accepted once ignores its weaker candidates
+    cands.sort(function (a, b) { return rank(b) - rank(a) || a.at - b.at || a.it.i - b.it.i; });
+    var claimed = {}, group = {}, kept = [], taken = {}, r0 = null;
+    function flush() {
+      // an accepted line owns every mention of itself, so "add the butter … stir the butter"
+      // cannot hand its second mention to the almond butter
+      cands.forEach(function (x) { if (group[x.it.i]) x.pos.forEach(function (p) { claimed[p] = true; }); });
+      group = {};
+    }
+    cands.forEach(function (c) {
+      var r = rank(c);
+      if (r0 !== null && r < r0 - 1e-9) flush();
+      r0 = r;
+      if (taken[c.it.i]) return;
+      if (c.pos.some(function (p) { return !claimed[p]; })) { kept.push(c); group[c.it.i] = true; taken[c.it.i] = true; }
+    });
+    var hits = kept.concat(extra);
+    // a named component wins; fall back to everything if that leaves nothing
+    if (anyNamed) {
+      var inSec = hits.filter(function (h) { return named[h.it.section]; });
+      if (inSec.length) hits = inSec;
+    }
+    // only lines with an amount are worth showing; unmeasured ones still claimed their words above
+    hits = hits.filter(function (h) { return h.it.measured; });
+    // the same ingredient listed twice (two components, or once per sub-mix): keep the one whose
+    // amount the step spells out, else the earliest; never show one line twice
+    var byKey = {};
+    hits.forEach(function (h) { var key = h.it.words.join(" "); (byKey[key] = byKey[key] || []).push(h); });
+    hits = hits.filter(function (h) {
+      var g = byKey[h.it.words.join(" ")];
+      if (g.length === 1) return true;
+      var pick = g.filter(function (x) { return x.qtyHit; });
+      g.sort(function (a, b) { return a.it.section - b.it.section || a.it.i - b.it.i; });
+      if (!pick.length) pick = [g[0]];
+      var seenText = {};
+      pick = pick.filter(function (x) { var t = x.it.text.toLowerCase(); if (seenText[t]) return false; seenText[t] = true; return true; });
+      return pick.indexOf(h) >= 0;
+    });
+    hits.sort(function (a, b) { return a.at - b.at || a.it.i - b.it.i; });
+    return hits.map(function (h) { return h.it.i; });
+  }
+
   var convCache = {};
   var subCache = {};
   var convCtx = { line: "", title: "" };
@@ -1308,7 +1522,7 @@ export const PAGE_HTML = String.raw`<!DOCTYPE html>
       sh2.appendChild(el("h3", null, "Steps"));
       var cbtn = el("button", "cookbtn", "▶ Cook");
       cbtn.onclick = function () {
-        openCookMode(cookTitle, items, (cookIngs || []).map(function (t) { return scaleLine(t, scaleF); }));
+        openCookMode(cookTitle, items, (cookIngs || []).map(function (t) { return scaleLine(t, scaleF); }), cookIngs || [], scaleF);
       };
       sh2.appendChild(cbtn);
       s2.appendChild(sh2);
@@ -1459,7 +1673,7 @@ export const PAGE_HTML = String.raw`<!DOCTYPE html>
   });
 
   // ---------- cook mode ----------
-  var cook = { steps: [], ings: [], i: 0, title: "" };
+  var cook = { steps: [], ings: [], i: 0, title: "", idx: null, scale: 1 };
   var cookWake = null;
   var cookAte = 0;
   function cookWakeAcquire() {
@@ -1491,7 +1705,26 @@ export const PAGE_HTML = String.raw`<!DOCTYPE html>
       dn.appendChild(fin);
       box.appendChild(dn);
     } else {
-      box.appendChild(el("div", "cooktxt", cook.steps[cook.i]));
+      var inner = el("div", "cookinner");
+      inner.appendChild(el("div", "cooktxt", cook.steps[cook.i]));
+      var use = cook.idx ? stepIngredients(cook.steps[cook.i], cook.idx) : [];
+      if (use.length) {
+        var card = el("div", "cookuse");
+        // reading the amounts must never flip the step: taps on the card stay on the card
+        card.addEventListener("click", function (ev) { ev.stopPropagation(); });
+        var kick = el("div", "kick");
+        kick.appendChild(el("span", null, "For this step"));
+        if (cook.scale !== 1) kick.appendChild(el("span", "scale", (formatQty(cook.scale) || String(cook.scale)) + "\u00d7 batch"));
+        card.appendChild(kick);
+        use.forEach(function (ix) {
+          var row = el("div", "row");
+          // long asides ("(I used a mixture of…)") are for the shopping list, not the stove
+          setIngLabel(row, String(cook.ings[ix] || "").replace(/\s*\([^)]{26,}\)/g, ""));
+          card.appendChild(row);
+        });
+        inner.appendChild(card);
+      }
+      box.appendChild(inner);
     }
     $("cooknext").style.visibility = done ? "hidden" : "";
     $("cookask").style.visibility = done ? "hidden" : "";
@@ -1507,8 +1740,11 @@ export const PAGE_HTML = String.raw`<!DOCTYPE html>
     cook.i = ni;
     renderCook();
   }
-  function openCookMode(title, steps, ings) {
-    cook = { steps: steps, ings: ings || [], i: 0, title: title || "" };
+  // ings are the lines as displayed (already scaled); rawIngs are the recipe's own lines, which
+  // the step text quotes ("add 2/3 cup Greek yogurt") and so are what the matcher reads
+  function openCookMode(title, steps, ings, rawIngs, scale) {
+    cook = { steps: steps, ings: ings || [], i: 0, title: title || "",
+      idx: ingIndex(rawIngs || ings || []), scale: scale || 1 };
     $("cook").classList.add("open");
     renderCook();
     cookWakeAcquire();
